@@ -46,9 +46,9 @@ import {
 import type { TestResult, RunCodeResult } from "@/lib/judge0";
 import {
   FOLLOW_UP_AUTO_CLOSE_REMAINING_MS,
-  FOLLOW_UP_SAFETY_CAP,
   FOLLOW_UP_SLICE_SAFETY_CAP,
 } from "@/lib/follow-up-config";
+import { FOLLOW_UP_SAFETY_CAP, ROUND_DURATION_MS } from "@/lib/interview-limits";
 import type { FollowUpSegment } from "@/lib/ai";
 import { PHASE_BUDGET_MS, type PaceReport } from "@/lib/ai";
 import { getRoundThresholds } from "@/lib/round-config";
@@ -76,7 +76,6 @@ function formatElapsedMs(ms: number): string {
   return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }
 
-const ROUND_DURATION_MS = 60 * 60 * 1000;
 const ROUND_THRESHOLDS = getRoundThresholds(ROUND_DURATION_MS);
 
 function phaseLabel(phase: SessionPhase): string {
@@ -158,6 +157,7 @@ export function InterviewWorkspace({ question }: Props) {
     codingEscalationStep: 0,
     bruteForceSkipped: false,
     snapshots: [],
+    topicsProbed: [],
   }));
 
   const [chatOpen, setChatOpen] = useState(true);
@@ -264,6 +264,8 @@ export function InterviewWorkspace({ question }: Props) {
   const currentFollowUpIndexRef = useRef(0);
   const [followUpsReachedCount, setFollowUpsReachedCount] = useState(0);
   const followUpsReachedCountRef = useRef(0);
+  const [topicsProbed, setTopicsProbed] = useState<string[]>([]);
+  const topicsProbedRef = useRef<string[]>([]);
   const [phaseStartTime, setPhaseStartTime] = useState<number | null>(null);
   const phaseStartTimeRef = useRef<number | null>(null);
   const phaseBudgetNudgedRef = useRef<Partial<Record<SessionPhase, boolean>>>({});
@@ -335,6 +337,8 @@ export function InterviewWorkspace({ question }: Props) {
       currentFollowUpIndexRef.current = saved.currentFollowUpIndex;
       setFollowUpsReachedCount(saved.followUpsReachedCount);
       followUpsReachedCountRef.current = saved.followUpsReachedCount;
+      setTopicsProbed(saved.topicsProbed);
+      topicsProbedRef.current = saved.topicsProbed;
       setFollowUpSegment(saved.followUpSegment);
       followUpSegmentRef.current = saved.followUpSegment;
       setFollowUpSealed(saved.followUpSealed);
@@ -417,6 +421,7 @@ export function InterviewWorkspace({ question }: Props) {
       codingEscalationStep: codingEscalationStepRef.current,
       bruteForceSkipped: bruteForceSkippedRef.current,
       snapshots: getSnapshots(),
+      topicsProbed: topicsProbedRef.current,
     });
   });
 
@@ -448,6 +453,7 @@ export function InterviewWorkspace({ question }: Props) {
     followUpSealed,
     followUpSegment,
     forcedWrap,
+    topicsProbed,
     question.id,
   ]);
 
@@ -474,6 +480,10 @@ export function InterviewWorkspace({ question }: Props) {
   useEffect(() => {
     followUpsReachedCountRef.current = followUpsReachedCount;
   }, [followUpsReachedCount]);
+
+  useEffect(() => {
+    topicsProbedRef.current = topicsProbed;
+  }, [topicsProbed]);
 
   useEffect(() => {
     isStreamingRef.current = isStreaming;
@@ -1956,6 +1966,8 @@ export function InterviewWorkspace({ question }: Props) {
     setCurrentFollowUpIndex(0);
     followUpsReachedCountRef.current = 0;
     setFollowUpsReachedCount(0);
+    setTopicsProbed([]);
+    topicsProbedRef.current = [];
     setTraceContent("");
     restoredSessionRef.current = false;
     setSessionPersistenceActive(true);

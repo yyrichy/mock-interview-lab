@@ -32,6 +32,8 @@ export type PersistedInterviewSession = {
   codingEscalationStep: number;
   bruteForceSkipped: boolean;
   snapshots: Snapshot[];
+  /** Topics already probed by the interviewer; persisted to prevent circular questioning across reloads. */
+  topicsProbed: string[];
 };
 
 export function sessionStorageKey(questionId: string): string {
@@ -141,6 +143,9 @@ export function parsePersistedInterviewSession(
   const snapshots = Array.isArray(o.snapshots)
     ? o.snapshots.filter(isSnapshot)
     : [];
+  const topicsProbed = Array.isArray(o.topicsProbed)
+    ? o.topicsProbed.filter((v): v is string => typeof v === "string")
+    : [];
 
   return {
     version: STORAGE_VERSION,
@@ -179,6 +184,7 @@ export function parsePersistedInterviewSession(
       typeof o.codingEscalationStep === "number" ? o.codingEscalationStep : 0,
     bruteForceSkipped: o.bruteForceSkipped === true,
     snapshots,
+    topicsProbed,
   };
 }
 
