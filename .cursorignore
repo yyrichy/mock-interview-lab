@@ -1,0 +1,29 @@
+# Secrets
+.env*
+
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Package manager locks
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+*.swp
+
+# Large data files Cursor shouldn't index
+data/questions.json

@@ -1,0 +1,2228 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { useCodingShortcuts } from "@/lib/hooks/useCodingShortcuts";
+import { useInterviewSessionAutosave } from "@/lib/hooks/useInterviewSessionAutosave";
+import { useFocusMicRecorder } from "@/lib/hooks/useFocusMicRecorder";
+import { useGroqAmbient } from "@/lib/hooks/useGroqAmbient";
+import { usePersistedState } from "@/lib/hooks/usePersistedState";
+import { useTickInterval } from "@/lib/hooks/useTickInterval";
+import { ChatPanel } from "@/components/ChatPanel";
+import { ChatToggleButton } from "@/components/ChatToggleButton";
+import { Editor } from "@/components/Editor";
+import { ResizableTestResultsSection } from "@/components/ResizableTestResultsSection";
+import { streamAiApi } from "@/lib/ai-client";
+import {
+  AI_MODEL_PRESET_STORAGE_KEY,
+  DEFAULT_AI_MODEL_PRESET_ID,
+  DEFAULT_UTILITY_MODEL_PRESET_ID,
+  UTILITY_MODEL_PRESET_STORAGE_KEY,
+  isAiModelPresetId,
+  type AiModelPresetId,
+} from "@/lib/ai-models";
+import type {
+  ChatMessage,
+  SessionPhase,
+  TranscriptEntry,
+} from "@/lib/chat";
+import {
+  clearPersistedInterviewSession,
+  loadPersistedInterviewSession,
+  savePersistedInterviewSession,
+  type PersistedInterviewSession,
+} from "@/lib/interview-session-storage";
+import {
+  getSampledFeedbackSnapshots,
+  getSnapshots,
+  replaceSnapshots,
+  startSnapshots,
+  stopSnapshots,
+} from "@/lib/snapshots";
+import {
+  isMediaRecorderCaptureSupported,
+  transcribeWithGroqWhisper,
+} from "@/lib/speech";
+import type { TestResult, RunCodeResult } from "@/lib/judge0";
+import {
+  FOLLOW_UP_AUTO_CLOSE_REMAINING_MS,
+  FOLLOW_UP_SAFETY_CAP,
+  FOLLOW_UP_SLICE_SAFETY_CAP,
+} from "@/lib/follow-up-config";
+import type { FollowUpSegment } from "@/lib/ai";
+import { PHASE_BUDGET_MS, type PaceReport } from "@/lib/ai";
+import { getRoundThresholds } from "@/lib/round-config";
+import { CONTEXT_VERBATIM_TURNS } from "@/lib/context-builder";
+import {
+  questionToEditorInitialValue,
+  questionToProblemStatement,
+  type Question,
+} from "@/lib/questions";
+import { assistantInvitesCodingWithoutToken } from "@/lib/planning-coding-invite";
+import { buildCodingVoiceReport } from "@/lib/coding-voice-report";
+import {
+  buildBankedEscalationHint,
+  getPendingBankedFollowUp,
+} from "@/lib/coding-escalation";
+
+type Props = {
+  question: Question;
+};
+
+function formatElapsedMs(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
+const ROUND_DURATION_MS = 60 * 60 * 1000;
+const ROUND_THRESHOLDS = getRoundThresholds(ROUND_DURATION_MS);
+
+function phaseLabel(phase: SessionPhase): string {
+  switch (phase) {
+    case "clarifying":
+      return "Clarifying";
+    case "planning":
+      return "Planning";
+    case "coding":
+      return "Coding";
+    case "followUp":
+      return "Follow-ups";
+    case "feedback":
+      return "Feedback";
+  }
+}
+
+function formatTranscriptLog(entries: TranscriptEntry[]): string {
+  if (entries.length === 0) {
+    return "";
+  }
+  return entries
+    .map(
+      (e) => `[${new Date(e.timestamp).toISOString()}] ${e.text}`
+    )
+    .join("\n");
+}
+
+function formatTestsSummary(
+  allPassed: boolean | null,
+  results: TestResult[] | null
+): string {
+  if (results == null || results.length === 0) {
+    return "The candidate did not run automated tests in the app (no results recorded).";
+  }
+  const n = results.length;
+  const passed = results.filter((r) => r.passed).length;
+  if (allPassed === true) {
+    return `Automated tests: all ${n} case(s) passed.`;
+  }
+  return `Automated tests: ${passed}/${n} passed (some failed or errored).`;
+}
+
+type SessionBoot = "pending" | "ready";
+
+export function InterviewWorkspace({ question }: Props) {
+  const [sessionBoot, setSessionBoot] = useState<SessionBoot>("pending");
+  /** When false, localStorage session snapshots are not written (cleared after feedback). */
+  const [sessionPersistenceActive, setSessionPersistenceActive] =
+    useState(true);
+  /** True after reload restored a saved session; cleared on Reset session. */
+  const restoredSessionRef = useRef(false);
+  const roundTimeoutFeedbackPendingRef = useRef(false);
+  const runFinalFeedbackRef = useRef<() => void>(() => {});
+  const collectSessionRef = useRef<() => PersistedInterviewSession>(() => ({
+    version: 1,
+    questionId: question.id,
+    savedAt: Date.now(),
+    sessionPhase: "clarifying",
+    messages: [],
+    code: questionToEditorInitialValue(question),
+    transcript: [],
+    roundStartTime: null,
+    phaseStartTime: null,
+    codingStartedAt: null,
+    testResults: null,
+    testAllPassed: null,
+    testRunError: null,
+    runCount: 0,
+    traceContent: "",
+    currentFollowUpIndex: 0,
+    followUpsReachedCount: 0,
+    followUpSegment: "final",
+    followUpSealed: false,
+    forcedWrap: false,
+    roundTimedOut: false,
+    rollingContext: null,
+    baselineSolvedAt: null,
+    codingEscalationStep: 0,
+    bruteForceSkipped: false,
+    snapshots: [],
+  }));
+
+  const [chatOpen, setChatOpen] = useState(true);
+  const [sessionPhase, setSessionPhase] =
+    useState<SessionPhase>("clarifying");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [liveCaption, setLiveCaption] = useState("");
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const focusMic = useFocusMicRecorder();
+  const whisperTranscribing = focusMic.transcribing;
+  const [testRunLoading, setTestRunLoading] = useState(false);
+  const [testRunError, setTestRunError] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<TestResult[] | null>(null);
+  const [testAllPassed, setTestAllPassed] = useState<boolean | null>(null);
+  const pendingHiddenNudgeRef = useRef<string | null>(null);
+  const [runMode, setRunMode] = usePersistedState<"standard" | "limited" | "dry-run">(
+    "ai-interviewer:runMode",
+    "standard",
+    (raw) =>
+      raw === "standard" || raw === "limited" || raw === "dry-run" ? raw : null
+  );
+  const [runCount, setRunCount] = useState(0);
+  const runCountRef = useRef(0);
+  const [traceContent, setTraceContent] = useState("");
+  const [sessionResetKey, setSessionResetKey] = useState(0);
+  const [codingStartedAt, setCodingStartedAt] = useState<number | null>(null);
+  const [roundStartTime, setRoundStartTime] = useState<number | null>(null);
+  const roundStartTimeRef = useRef<number | null>(null);
+  const roundTimedOutRef = useRef(false);
+  const openingGenRef = useRef(0);
+  const followUpGenRef = useRef(0);
+  const followUpAssistantTurnsRef = useRef(0);
+  const followUpAutoCloseScheduledRef = useRef(false);
+  const followUpSealedRef = useRef(false);
+  const [followUpSealed, setFollowUpSealed] = useState(false);
+  const [followUpSegment, setFollowUpSegment] =
+    useState<FollowUpSegment>("final");
+  const followUpSegmentRef = useRef<FollowUpSegment>("final");
+  /** Slice cap hit: allow one candidate reply (or proceed button) before sealing chat. */
+  const sliceAwaitingCandidateReplyRef = useRef(false);
+  const sliceForceWrapUpRef = useRef(false);
+  const [sliceGraceReply, setSliceGraceReply] = useState(false);
+  const [modelPresetId, setModelPresetId] = usePersistedState<AiModelPresetId>(
+    AI_MODEL_PRESET_STORAGE_KEY,
+    DEFAULT_AI_MODEL_PRESET_ID,
+    (raw) => (isAiModelPresetId(raw) ? raw : null)
+  );
+  const modelPresetIdRef = useRef(modelPresetId);
+  const [utilityModelPresetId, setUtilityModelPresetId] =
+    usePersistedState<AiModelPresetId>(
+      UTILITY_MODEL_PRESET_STORAGE_KEY,
+      DEFAULT_UTILITY_MODEL_PRESET_ID,
+      (raw) => (isAiModelPresetId(raw) ? raw : null)
+    );
+  const utilityModelPresetIdRef = useRef(utilityModelPresetId);
+  const sessionPhaseRef = useRef<SessionPhase>(sessionPhase);
+  const isStreamingRef = useRef(isStreaming);
+  const focusedMicRef = useRef(false);
+  /** True while the user is pressing the mic (all phases). */
+  const focusMicHeldRef = useRef(false);
+  const pauseBgForAiRef = useRef(false);
+  /** Aborts any in-flight AI stream when the component unmounts. */
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const testRunLoadingRef = useRef(false);
+  const handleRunTestsRef = useRef(() => {});
+  const handleImDoneRef = useRef(() => {});
+  const rollingContextRef = useRef<string | null>(null);
+  const summaryingRef = useRef(false);
+  const [padRealism, setPadRealism] = usePersistedState<boolean>(
+    "ai-interviewer:padRealism",
+    false,
+    (raw) => (raw === "true" ? true : raw === "false" ? false : null),
+    (v) => (v ? "true" : "false")
+  );
+  const [humanLatency, setHumanLatency] = usePersistedState<boolean>(
+    "ai-interviewer:humanLatency",
+    false,
+    (raw) => (raw === "true" ? true : raw === "false" ? false : null),
+    (v) => (v ? "true" : "false")
+  );
+  const baselineSolvedAtRef = useRef<number | null>(null);
+  const [baselineSolvedAt, setBaselineSolvedAt] = useState<number | null>(null);
+  const codingEscalationStepRef = useRef(0);
+  const escalationNudgeGenRef = useRef(0);
+  // Cutoff for the ambient-tail merge: every typed/voice user message includes
+  // ambient transcript captured AFTER this timestamp (and within a short window),
+  // then advances the cutoff so the same lines aren't sent twice.
+  const lastSentAmbientCutoffRef = useRef<number>(0);
+  // When tests pass during coding, we drain queued HINT(s) into here and the
+  // proactive nudge runner consumes them. Treated as a single bundled HINT.
+  const pendingProactiveEscalationHintRef = useRef<string | null>(null);
+  // Tracks which kind of increment the proactive nudge should perform on success.
+  const pendingProactiveBankedRef = useRef(false);
+  const pendingProactiveAutonomousRef = useRef(false);
+  const [forcedWrap, setForcedWrap] = useState(false);
+  const forcedWrapRef = useRef(false);
+  const forcedWrapHintPendingRef = useRef(false);
+  const forcedHandoffScheduledRef = useRef(false);
+  const forcedWrapOpenerGenRef = useRef(0);
+  const [currentFollowUpIndex, setCurrentFollowUpIndex] = useState(0);
+  const currentFollowUpIndexRef = useRef(0);
+  const [followUpsReachedCount, setFollowUpsReachedCount] = useState(0);
+  const followUpsReachedCountRef = useRef(0);
+  const [phaseStartTime, setPhaseStartTime] = useState<number | null>(null);
+  const phaseStartTimeRef = useRef<number | null>(null);
+  const phaseBudgetNudgedRef = useRef<Partial<Record<SessionPhase, boolean>>>({});
+  const bruteForceSkippedRef = useRef(false);
+  const firstTestRunConsumedRef = useRef(false);
+  const followUpAutoCloseByTimeCheckedRef = useRef(false);
+
+  const roundNowTick = useTickInterval(roundStartTime !== null, 1000);
+  const codingNowTick = useTickInterval(
+    sessionPhase === "coding" && codingStartedAt !== null,
+    1000
+  );
+
+  const remainingRoundMs = useMemo(() => {
+    if (roundStartTime === null) {
+      return ROUND_DURATION_MS;
+    }
+    return Math.max(0, ROUND_DURATION_MS - (roundNowTick - roundStartTime));
+  }, [roundStartTime, roundNowTick]);
+
+  const pendingBankedEscalation = useMemo(
+    () =>
+      getPendingBankedFollowUp(
+        question.followUps,
+        currentFollowUpIndex,
+        baselineSolvedAt,
+        remainingRoundMs
+      ),
+    [
+      question.followUps,
+      currentFollowUpIndex,
+      baselineSolvedAt,
+      remainingRoundMs,
+    ]
+  );
+
+  const speechSupported = useMemo(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return isMediaRecorderCaptureSupported();
+  }, []);
+
+  const defaultInitialValue = questionToEditorInitialValue(question);
+  const codeRef = useRef(defaultInitialValue);
+  const [editorInitialCode, setEditorInitialCode] = useState(defaultInitialValue);
+  const problemStatement = questionToProblemStatement(question);
+
+  useEffect(() => {
+    const saved = loadPersistedInterviewSession(question.id);
+    if (saved) {
+      restoredSessionRef.current = true;
+      setMessages(saved.messages);
+      setSessionPhase(saved.sessionPhase);
+      setTranscript(saved.transcript);
+      transcriptRef.current = saved.transcript;
+      setRoundStartTime(saved.roundStartTime);
+      roundStartTimeRef.current = saved.roundStartTime;
+      setPhaseStartTime(saved.phaseStartTime);
+      phaseStartTimeRef.current = saved.phaseStartTime;
+      setCodingStartedAt(saved.codingStartedAt);
+      setTestResults(saved.testResults);
+      setTestAllPassed(saved.testAllPassed);
+      setTestRunError(saved.testRunError);
+      setRunCount(saved.runCount);
+      runCountRef.current = saved.runCount;
+      setTraceContent(saved.traceContent);
+      setCurrentFollowUpIndex(saved.currentFollowUpIndex);
+      currentFollowUpIndexRef.current = saved.currentFollowUpIndex;
+      setFollowUpsReachedCount(saved.followUpsReachedCount);
+      followUpsReachedCountRef.current = saved.followUpsReachedCount;
+      setFollowUpSegment(saved.followUpSegment);
+      followUpSegmentRef.current = saved.followUpSegment;
+      setFollowUpSealed(saved.followUpSealed);
+      followUpSealedRef.current = saved.followUpSealed;
+      setForcedWrap(saved.forcedWrap);
+      forcedWrapRef.current = saved.forcedWrap;
+      if (saved.forcedWrap && saved.sessionPhase === "coding") {
+        setSessionPhase("followUp");
+        sessionPhaseRef.current = "followUp";
+        setFollowUpSegment("final");
+        followUpSegmentRef.current = "final";
+      }
+      roundTimedOutRef.current = saved.roundTimedOut;
+      rollingContextRef.current = saved.rollingContext;
+      setBaselineSolvedAt(saved.baselineSolvedAt);
+      baselineSolvedAtRef.current = saved.baselineSolvedAt;
+      codingEscalationStepRef.current = saved.codingEscalationStep;
+      bruteForceSkippedRef.current = saved.bruteForceSkipped;
+      codeRef.current = saved.code;
+      setEditorInitialCode(saved.code);
+      sessionPhaseRef.current = saved.sessionPhase;
+      if (saved.snapshots.length > 0) {
+        replaceSnapshots(saved.snapshots);
+      }
+      if (
+        saved.sessionPhase === "coding" &&
+        !saved.forcedWrap &&
+        !saved.roundTimedOut &&
+        saved.codingStartedAt !== null
+      ) {
+        startSnapshots(
+          () => codeRef.current,
+          () => formatTranscriptLog(transcriptRef.current)
+        );
+      }
+      if (saved.roundStartTime !== null) {
+        const remaining =
+          ROUND_DURATION_MS - (Date.now() - saved.roundStartTime);
+        if (remaining <= 0 && saved.sessionPhase !== "feedback") {
+          roundTimedOutRef.current = true;
+          queueMicrotask(() => runFinalFeedbackRef.current());
+        }
+      }
+    }
+    setSessionBoot("ready");
+  }, [question.id]);
+
+  useInterviewSessionAutosave(
+    sessionBoot === "ready" &&
+      roundStartTime !== null &&
+      sessionPersistenceActive,
+    collectSessionRef
+  );
+
+  useEffect(() => {
+    collectSessionRef.current = () => ({
+      version: 1,
+      questionId: question.id,
+      savedAt: Date.now(),
+      sessionPhase: sessionPhaseRef.current,
+      messages,
+      code: codeRef.current,
+      transcript: transcriptRef.current,
+      roundStartTime: roundStartTimeRef.current,
+      phaseStartTime: phaseStartTimeRef.current,
+      codingStartedAt,
+      testResults,
+      testAllPassed,
+      testRunError,
+      runCount: runCountRef.current,
+      traceContent,
+      currentFollowUpIndex: currentFollowUpIndexRef.current,
+      followUpsReachedCount: followUpsReachedCountRef.current,
+      followUpSegment: followUpSegmentRef.current,
+      followUpSealed: followUpSealedRef.current,
+      forcedWrap: forcedWrapRef.current,
+      roundTimedOut: roundTimedOutRef.current,
+      rollingContext: rollingContextRef.current,
+      baselineSolvedAt: baselineSolvedAtRef.current,
+      codingEscalationStep: codingEscalationStepRef.current,
+      bruteForceSkipped: bruteForceSkippedRef.current,
+      snapshots: getSnapshots(),
+    });
+  });
+
+  useEffect(() => {
+    if (
+      sessionBoot !== "ready" ||
+      roundStartTime === null ||
+      !sessionPersistenceActive
+    ) {
+      return;
+    }
+    try {
+      savePersistedInterviewSession(collectSessionRef.current());
+    } catch {
+      /* ignore */
+    }
+  }, [
+    sessionBoot,
+    sessionPersistenceActive,
+    sessionPhase,
+    messages,
+    roundStartTime,
+    codingStartedAt,
+    testResults,
+    testAllPassed,
+    testRunError,
+    runCount,
+    traceContent,
+    followUpSealed,
+    followUpSegment,
+    forcedWrap,
+    question.id,
+  ]);
+
+  useEffect(() => {
+    sessionPhaseRef.current = sessionPhase;
+  }, [sessionPhase]);
+
+  useEffect(() => {
+    modelPresetIdRef.current = modelPresetId;
+  }, [modelPresetId]);
+
+  useEffect(() => {
+    utilityModelPresetIdRef.current = utilityModelPresetId;
+  }, [utilityModelPresetId]);
+
+  useEffect(() => {
+    runCountRef.current = runCount;
+  }, [runCount]);
+
+  useEffect(() => {
+    currentFollowUpIndexRef.current = currentFollowUpIndex;
+  }, [currentFollowUpIndex]);
+
+  useEffect(() => {
+    followUpsReachedCountRef.current = followUpsReachedCount;
+  }, [followUpsReachedCount]);
+
+  useEffect(() => {
+    isStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
+
+  useEffect(() => {
+    setTranscript([]);
+    setTestResults(null);
+    setTestAllPassed(null);
+    setTestRunError(null);
+    setTestRunLoading(false);
+    setCodingStartedAt(null);
+  }, [question.id]);
+
+  useEffect(() => {
+    testRunLoadingRef.current = testRunLoading;
+  }, [testRunLoading]);
+
+  useEffect(() => {
+    roundStartTimeRef.current = roundStartTime;
+  }, [roundStartTime]);
+
+  useEffect(() => {
+    phaseStartTimeRef.current = phaseStartTime;
+  }, [phaseStartTime]);
+
+  useEffect(() => {
+    if (roundStartTime === null) return;
+    const remaining = ROUND_DURATION_MS - (roundNowTick - roundStartTime);
+    const phase = sessionPhaseRef.current;
+
+    // Forced verbal wrap-up: move into follow-up and ask for a final approach
+    // walkthrough (editor already locked in followUp). Fires exactly once.
+    if (
+      phase === "coding" &&
+      !forcedWrapRef.current &&
+      remaining > 0 &&
+      remaining <= ROUND_THRESHOLDS.forcedStopTriggerMs
+    ) {
+      beginForcedVerbalWrapTransition();
+      queueMicrotask(() => {
+        void runForcedWrapOpener();
+      });
+    }
+
+    // Hard floor: never enter follow-up with less than the floor reserved.
+    // Precedence: this beats the verbal wrap trigger — hand off immediately.
+    if (
+      phase === "coding" &&
+      !forcedHandoffScheduledRef.current &&
+      remaining > 0 &&
+      remaining <= ROUND_THRESHOLDS.followUpFloorMs
+    ) {
+      forcedHandoffScheduledRef.current = true;
+      queueMicrotask(() => handleImDoneRef.current());
+    }
+
+    if (remaining <= 0 && !roundTimedOutRef.current) {
+      roundTimedOutRef.current = true;
+      stopSnapshots();
+      groqAmbientRef.current?.stop();
+      queueMicrotask(() => runFinalFeedbackRef.current());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roundNowTick, roundStartTime]);
+
+  // If a stream was in progress when forced-wrap fired, retry the opener
+  // as soon as that stream finishes.
+  useEffect(() => {
+    if (
+      !isStreaming &&
+      forcedWrapRef.current &&
+      sessionPhaseRef.current === "followUp" &&
+      !forcedWrapHintPendingRef.current
+    ) {
+      queueMicrotask(() => {
+        void runForcedWrapOpener();
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
+
+  useEffect(() => {
+    if (sessionPhase !== "coding") {
+      setLiveCaption("");
+    }
+  }, [sessionPhase]);
+
+  // Cancel any in-flight AI stream on unmount so the server stops streaming
+  // into a dead connection (resource + cost hygiene).
+  useEffect(() => {
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    return () => {
+      controller.abort();
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (sessionBoot !== "ready") {
+      return;
+    }
+    if (restoredSessionRef.current) {
+      return;
+    }
+    const myGen = ++openingGenRef.current;
+    const assistantId = crypto.randomUUID();
+
+    setMessages([{ id: assistantId, role: "assistant", content: "" }]);
+    setIsStreaming(true);
+
+    // Round + phase timer begin the moment the interviewer starts talking.
+    const t0 = Date.now();
+    roundStartTimeRef.current = t0;
+    setRoundStartTime(t0);
+    phaseStartTimeRef.current = t0;
+    setPhaseStartTime(t0);
+    phaseBudgetNudgedRef.current = {};
+
+    async function runOpening() {
+      try {
+        for await (const chunk of streamAiApi({
+          kind: "opening",
+          modelPresetId: utilityModelPresetIdRef.current,
+          candidateDescription: question.candidateDescription,
+          interviewerContext: question.interviewerContext,
+        }, streamAbortRef.current?.signal)) {
+          if (myGen !== openingGenRef.current) {
+            return;
+          }
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: m.content + chunk } : m
+            )
+          );
+        }
+      } catch (e) {
+        if (myGen !== openingGenRef.current) {
+          return;
+        }
+        const errText = e instanceof Error ? e.message : String(e);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content: m.content
+                    ? `${m.content}\n\n[Error: ${errText}]`
+                    : `[Error: ${errText}]`,
+                }
+              : m
+          )
+        );
+      } finally {
+        if (myGen === openingGenRef.current) {
+          setIsStreaming(false);
+        }
+      }
+    }
+
+    void runOpening();
+
+    return () => {
+      openingGenRef.current++;
+    };
+  }, [
+    sessionBoot,
+    question.id,
+    sessionResetKey,
+    question.candidateDescription,
+    question.interviewerContext,
+  ]);
+
+  useEffect(() => {
+    if (!isStreaming && roundTimeoutFeedbackPendingRef.current) {
+      roundTimeoutFeedbackPendingRef.current = false;
+      void runFinalFeedbackStream();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
+
+  // Groq Whisper ambient recording — runs during coding phase only.
+  const groqAmbientRef = useGroqAmbient(
+    sessionPhase === "coding",
+    (text) =>
+      setTranscript((prev) => [...prev, { text, timestamp: Date.now() }]),
+    (error) => setSpeechError(error)
+  );
+
+  const editorLocked =
+    sessionPhase === "clarifying" ||
+    sessionPhase === "planning" ||
+    sessionPhase === "feedback";
+  const showEditorTools =
+    sessionPhase === "coding" || sessionPhase === "followUp";
+
+  function transitionPlanningToCoding(): void {
+    if (sessionPhaseRef.current !== "planning") {
+      return;
+    }
+    const t0 = Date.now();
+    setSessionPhase("coding");
+    sessionPhaseRef.current = "coding";
+    setCodingStartedAt(t0);
+    phaseStartTimeRef.current = t0;
+    setPhaseStartTime(t0);
+    startSnapshots(
+      () => codeRef.current,
+      () => formatTranscriptLog(transcriptRef.current)
+    );
+  }
+
+  function handleOpenEditorPlanning(): void {
+    if (isStreamingRef.current || sessionPhaseRef.current !== "planning") {
+      return;
+    }
+    transitionPlanningToCoding();
+  }
+
+  async function runFollowUpAutoClose(): Promise<void> {
+    if (sessionPhaseRef.current !== "followUp" || followUpSealedRef.current) {
+      return;
+    }
+    const genAtStart = followUpGenRef.current;
+    const assistantId = crypto.randomUUID();
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "" },
+    ]);
+    setIsStreaming(true);
+    try {
+      for await (const chunk of streamAiApi({
+        kind: "followUpClose",
+        modelPresetId: utilityModelPresetIdRef.current,
+      }, streamAbortRef.current?.signal)) {
+        if (genAtStart !== followUpGenRef.current) {
+          return;
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+          )
+        );
+      }
+    } catch (e) {
+      if (genAtStart !== followUpGenRef.current) {
+        return;
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      if (genAtStart === followUpGenRef.current) {
+        setIsStreaming(false);
+        followUpSealedRef.current = true;
+        setFollowUpSealed(true);
+      }
+    }
+  }
+
+  function getRemainingRoundMsNow(): number {
+    const start = roundStartTimeRef.current;
+    if (start === null) {
+      return ROUND_DURATION_MS;
+    }
+    return Math.max(0, ROUND_DURATION_MS - (Date.now() - start));
+  }
+
+  function skipRemainingBankedFollowUps(): void {
+    const len = question.followUps?.length ?? 0;
+    currentFollowUpIndexRef.current = len;
+    setCurrentFollowUpIndex(len);
+  }
+
+  /** Schedules a proactive in-editor banked variant. Returns true if one was queued. */
+  function tryScheduleBankedCodingEscalation(): boolean {
+    if (
+      sessionPhaseRef.current !== "coding" ||
+      forcedWrapRef.current ||
+      isStreamingRef.current
+    ) {
+      return false;
+    }
+    const pending = getPendingBankedFollowUp(
+      question.followUps,
+      currentFollowUpIndexRef.current,
+      baselineSolvedAtRef.current,
+      getRemainingRoundMsNow()
+    );
+    if (pending === null) {
+      return false;
+    }
+    const nextIndex = pending.index + 1;
+    currentFollowUpIndexRef.current = nextIndex;
+    setCurrentFollowUpIndex(nextIndex);
+    pendingProactiveEscalationHintRef.current = buildBankedEscalationHint(
+      pending.followUp
+    );
+    pendingProactiveBankedRef.current = true;
+    pendingProactiveAutonomousRef.current = false;
+    queueMicrotask(() => {
+      void runCodingEscalationNudge();
+    });
+    return true;
+  }
+
+  function buildPaceReport(): PaceReport {
+    const codingStart = codingStartedAt;
+    const baselineMs = baselineSolvedAtRef.current;
+    const baselineMinutes =
+      codingStart !== null && baselineMs !== null
+        ? (baselineMs - codingStart) / 60_000
+        : null;
+    return {
+      baselineMinutes,
+      followUpsReached: followUpsReachedCountRef.current,
+      followUpsAvailable: question.followUps?.length ?? 0,
+      ranOutOfTime:
+        roundTimedOutRef.current &&
+        followUpsReachedCountRef.current < (question.followUps?.length ?? 0),
+      bruteForceSkipped: bruteForceSkippedRef.current,
+      escalationsAttempted: codingEscalationStepRef.current,
+      forcedWrap: forcedWrapRef.current,
+    };
+  }
+
+  async function runCodingEscalationNudge(): Promise<void> {
+    if (
+      sessionPhaseRef.current !== "coding" ||
+      isStreamingRef.current ||
+      forcedWrapRef.current
+    ) {
+      return;
+    }
+    const hint = pendingProactiveEscalationHintRef.current;
+    if (!hint) {
+      return;
+    }
+    // Consume so a duplicate scheduling doesn't fire twice.
+    pendingProactiveEscalationHintRef.current = null;
+    const wasBanked = pendingProactiveBankedRef.current;
+    const wasAutonomous = pendingProactiveAutonomousRef.current;
+    pendingProactiveBankedRef.current = false;
+    pendingProactiveAutonomousRef.current = false;
+
+    const myGen = ++escalationNudgeGenRef.current;
+    const assistantId = crypto.randomUUID();
+    const historyForNudge = messages;
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "" },
+    ]);
+    setIsStreaming(true);
+    pauseBgForAiRef.current = true;
+    groqAmbientRef.current?.pauseForFocus();
+    let streamOk = false;
+    try {
+      for await (const chunk of streamAiApi({
+        kind: "codingEscalationNudge",
+        modelPresetId: utilityModelPresetIdRef.current,
+        priorChatHistory: historyForNudge,
+        currentCode: codeRef.current,
+        hint,
+        codingEscalationStep: codingEscalationStepRef.current,
+        ...(rollingContextRef.current
+          ? { rollingContext: rollingContextRef.current }
+          : {}),
+      }, streamAbortRef.current?.signal)) {
+        if (myGen !== escalationNudgeGenRef.current) {
+          return;
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+          )
+        );
+      }
+      streamOk = true;
+    } catch (e) {
+      if (myGen !== escalationNudgeGenRef.current) {
+        return;
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      if (myGen === escalationNudgeGenRef.current) {
+        setIsStreaming(false);
+        pauseBgForAiRef.current = false;
+        if (streamOk) {
+          codingEscalationStepRef.current += 1;
+          if (wasBanked) {
+            const next = followUpsReachedCountRef.current + 1;
+            followUpsReachedCountRef.current = next;
+            setFollowUpsReachedCount(next);
+          }
+          // Autonomous-only path: nothing else to track beyond the step bump.
+          void wasAutonomous;
+        }
+        if (sessionPhaseRef.current === "coding" && !focusedMicRef.current) {
+          groqAmbientRef.current?.resumeFromFocus();
+        }
+      }
+    }
+  }
+
+  function beginForcedVerbalWrapTransition(): void {
+    if (sessionPhaseRef.current !== "coding" || forcedWrapRef.current) {
+      return;
+    }
+    forcedWrapRef.current = true;
+    setForcedWrap(true);
+    stopSnapshots();
+    groqAmbientRef.current?.stop();
+    followUpGenRef.current += 1;
+    followUpSegmentRef.current = "final";
+    setFollowUpSegment("final");
+    followUpAssistantTurnsRef.current = 0;
+    followUpAutoCloseScheduledRef.current = false;
+    followUpSealedRef.current = false;
+    setFollowUpSealed(false);
+    sliceAwaitingCandidateReplyRef.current = false;
+    sliceForceWrapUpRef.current = false;
+    setSliceGraceReply(false);
+    setSessionPhase("followUp");
+    sessionPhaseRef.current = "followUp";
+    const tNow = Date.now();
+    phaseStartTimeRef.current = tNow;
+    setPhaseStartTime(tNow);
+  }
+
+  async function runForcedWrapOpener(): Promise<void> {
+    if (
+      !forcedWrapRef.current ||
+      sessionPhaseRef.current !== "followUp" ||
+      isStreamingRef.current
+    ) {
+      return;
+    }
+    const myGen = ++forcedWrapOpenerGenRef.current;
+    const assistantId = crypto.randomUUID();
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "" },
+    ]);
+    setIsStreaming(true);
+    pauseBgForAiRef.current = true;
+    groqAmbientRef.current?.pauseForFocus();
+    try {
+      for await (const chunk of streamAiApi({
+        kind: "forcedWrapOpener",
+        modelPresetId: utilityModelPresetIdRef.current,
+        finalCode: codeRef.current,
+      }, streamAbortRef.current?.signal)) {
+        if (myGen !== forcedWrapOpenerGenRef.current) {
+          return;
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+          )
+        );
+      }
+    } catch (e) {
+      if (myGen !== forcedWrapOpenerGenRef.current) {
+        return;
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      if (myGen === forcedWrapOpenerGenRef.current) {
+        setIsStreaming(false);
+        pauseBgForAiRef.current = false;
+        // From now on, candidate replies during forced-wrap should carry the
+        // assess+handoff HINT.
+        forcedWrapHintPendingRef.current = true;
+      }
+    }
+  }
+
+  /**
+   * @returns false if the message was not sent (e.g. assistant still streaming).
+   */
+  async function sendUserMessage(text: string): Promise<boolean> {
+    if (
+      isStreamingRef.current ||
+      sessionPhaseRef.current === "feedback"
+    ) {
+      return false;
+    }
+    if (
+      sessionPhaseRef.current === "followUp" &&
+      followUpSealedRef.current
+    ) {
+      return false;
+    }
+
+    if (sessionPhaseRef.current === "coding") {
+      pauseBgForAiRef.current = true;
+      groqAmbientRef.current?.pauseForFocus();
+    }
+
+    const now = Date.now();
+    const roundStart = roundStartTimeRef.current ?? now;
+    const remainingMs = ROUND_DURATION_MS - (now - roundStart);
+    const phaseElapsedMs =
+      phaseStartTimeRef.current !== null
+        ? now - phaseStartTimeRef.current
+        : null;
+
+    // One-shot phase-budget nudge: only send phaseElapsedMs when we've first
+    // crossed the budget for this phase, so the AI pushes back once rather
+    // than on every subsequent turn.
+    const phaseBudget = PHASE_BUDGET_MS[sessionPhaseRef.current];
+    const shouldNudgePhaseBudget =
+      phaseBudget !== null &&
+      phaseElapsedMs !== null &&
+      phaseElapsedMs > phaseBudget &&
+      !phaseBudgetNudgedRef.current[sessionPhaseRef.current];
+    if (shouldNudgePhaseBudget) {
+      phaseBudgetNudgedRef.current = {
+        ...phaseBudgetNudgedRef.current,
+        [sessionPhaseRef.current]: true,
+      };
+    }
+
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text,
+    };
+    const assistantId = crypto.randomUUID();
+    const phaseNow = sessionPhaseRef.current;
+    const sliceWrapUpThisTurn =
+      phaseNow === "followUp" &&
+      followUpSegmentRef.current === "slice" &&
+      sliceAwaitingCandidateReplyRef.current;
+    if (sliceWrapUpThisTurn) {
+      sliceForceWrapUpRef.current = true;
+    }
+    const msgsForApi: ChatMessage[] = [...messages, userMsg];
+
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      { id: assistantId, role: "assistant", content: "" },
+    ]);
+    setIsStreaming(true);
+
+    const applyHumanLatency = humanLatency;
+    let messageStreamOk = false;
+    // Ambient-tail merge: during coding, attach a snippet of recent ambient
+    // narration to the user payload so the AI sees both their typed/spoken
+    // question AND what they were thinking aloud. Window is ~15s; we also gate
+    // on `lastSentAmbientCutoffRef` so the same lines aren't sent twice across
+    // turns.
+    const AMBIENT_WINDOW_MS = 15_000;
+    const AMBIENT_MAX_CHARS = 600;
+    let ambientTailForThisTurn: string | null = null;
+    if (phaseNow === "coding") {
+      const cutoff = Math.max(
+        lastSentAmbientCutoffRef.current,
+        now - AMBIENT_WINDOW_MS
+      );
+      const recent = transcriptRef.current
+        .filter((e) => e.timestamp > cutoff)
+        .map((e) => e.text)
+        .join(" ")
+        .trim();
+      if (recent.length > 0) {
+        ambientTailForThisTurn =
+          recent.length > AMBIENT_MAX_CHARS
+            ? recent.slice(recent.length - AMBIENT_MAX_CHARS)
+            : recent;
+      }
+      lastSentAmbientCutoffRef.current = now;
+    }
+    try {
+      const hiddenNudgeForThisTurn = pendingHiddenNudgeRef.current;
+      pendingHiddenNudgeRef.current = null;
+      const ladderExhausted =
+        currentFollowUpIndexRef.current >= (question.followUps?.length ?? 0);
+      // Phase-advance signal detection: AI may prefix its reply with [->planning]
+      // or [->coding] (on its own line) to trigger a seamless phase transition.
+      // We buffer the first bytes, strip the token if present, then stream normally.
+      const SIG_PLAN = "[->planning]";
+      const SIG_CODE = "[->coding]";
+      let phaseSignal: "planning" | "coding" | null = null;
+      let sigBuf = "";
+      let sigFlushed = false;
+      let fullStreamedContent = "";
+
+      let firstChunk = true;
+      let charCount = 0;
+      for await (const chunk of streamAiApi({
+        kind: "message",
+        modelPresetId: modelPresetIdRef.current,
+        messages: msgsForApi,
+        currentCode: codeRef.current,
+        phase: phaseNow,
+        questionDifficulty: question.difficulty,
+        ...(phaseNow === "followUp"
+          ? {
+              followUpTurnContext: {
+                completedAssistantTurns: followUpAssistantTurnsRef.current,
+                ladderExhausted,
+                preAuthoredFollowUpTotal: question.followUps?.length ?? 0,
+                difficulty: question.difficulty,
+                segment: followUpSegmentRef.current,
+                ...(sliceForceWrapUpRef.current
+                  ? { sliceWrapUp: true as const }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(rollingContextRef.current
+          ? { rollingContext: rollingContextRef.current }
+          : {}),
+        remainingMs,
+        ...(shouldNudgePhaseBudget && phaseElapsedMs !== null
+          ? { phaseElapsedMs }
+          : {}),
+        ...(hiddenNudgeForThisTurn ? { hiddenTestNudge: hiddenNudgeForThisTurn } : {}),
+        ...(phaseNow === "coding"
+          ? { codingEscalationStep: codingEscalationStepRef.current }
+          : {}),
+        ...(phaseNow === "followUp" && forcedWrapHintPendingRef.current
+          ? { forcedWrapHint: true }
+          : {}),
+        ...(phaseNow === "coding" && ambientTailForThisTurn
+          ? { ambientTail: ambientTailForThisTurn }
+          : {}),
+      }, streamAbortRef.current?.signal)) {
+        fullStreamedContent += chunk;
+        // Buffer the very start until we can determine if a signal is present.
+        let displayChunk = chunk;
+        if (!sigFlushed) {
+          sigBuf += chunk;
+          // Wait until we have at least as many chars as the longer signal,
+          // or the first newline arrives — whichever comes first.
+          if (sigBuf.length < SIG_PLAN.length && !sigBuf.includes("\n")) {
+            continue;
+          }
+          sigFlushed = true;
+          let start = 0;
+          if (sigBuf.startsWith(SIG_PLAN)) {
+            phaseSignal = "planning";
+            start = SIG_PLAN.length;
+            if (sigBuf[start] === "\n") start++;
+          } else if (sigBuf.startsWith(SIG_CODE)) {
+            phaseSignal = "coding";
+            start = SIG_CODE.length;
+            if (sigBuf[start] === "\n") start++;
+          }
+          displayChunk = sigBuf.slice(start);
+        }
+
+        if (firstChunk && applyHumanLatency) {
+          firstChunk = false;
+          await new Promise<void>((r) =>
+            setTimeout(r, 1500 + Math.random() * 2500)
+          );
+        } else {
+          firstChunk = false;
+        }
+        charCount += displayChunk.length;
+        if (applyHumanLatency && charCount > 320) {
+          continue;
+        }
+        if (displayChunk) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: m.content + displayChunk } : m
+            )
+          );
+        }
+      }
+      // Safety: if the stream ended while still buffering, flush whatever we have.
+      if (!sigFlushed && sigBuf) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + sigBuf } : m
+          )
+        );
+      }
+      // Fallback: if the AI buried the signal token in the body rather than leading
+      // with it, scan the full response and strip it from the displayed message.
+      if (phaseSignal === null) {
+        if (fullStreamedContent.includes(SIG_CODE)) {
+          phaseSignal = "coding";
+        } else if (fullStreamedContent.includes(SIG_PLAN)) {
+          phaseSignal = "planning";
+        }
+        if (phaseSignal !== null) {
+          const cleaned = fullStreamedContent
+            .replace(/\[->planning\]\n?/g, "")
+            .replace(/\[->coding\]\n?/g, "")
+            .trim();
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: cleaned } : m
+            )
+          );
+        }
+      }
+      if (
+        phaseSignal === null &&
+        phaseNow === "planning" &&
+        assistantInvitesCodingWithoutToken(fullStreamedContent)
+      ) {
+        phaseSignal = "coding";
+      }
+
+      messageStreamOk = true;
+
+      // Apply AI-driven phase transition (signal was stripped from the message above).
+      if (phaseSignal === "planning" && phaseNow === "clarifying") {
+        setSessionPhase("planning");
+        sessionPhaseRef.current = "planning";
+        const t = Date.now();
+        phaseStartTimeRef.current = t;
+        setPhaseStartTime(t);
+      } else if (phaseSignal === "coding" && phaseNow === "planning") {
+        transitionPlanningToCoding();
+      }
+      // Lazily generate rolling summary when history grows beyond verbatim window
+      const windowSize = CONTEXT_VERBATIM_TURNS * 2;
+      const totalAfter = msgsForApi.length + 1; // +1 for assistant response
+      if (totalAfter > windowSize && !summaryingRef.current) {
+        const msgsToSummarize = msgsForApi.slice(0, -(windowSize - 2));
+        if (msgsToSummarize.length > 0) {
+          summaryingRef.current = true;
+          void (async () => {
+            // Snapshot the previous summary so we never clobber a working one
+            // with a partial/empty result from a failed retry.
+            const previous = rollingContextRef.current;
+            let summary = "";
+            try {
+              for await (const chunk of streamAiApi({
+                kind: "summarize",
+                modelPresetId: utilityModelPresetIdRef.current,
+                messages: msgsToSummarize,
+              }, streamAbortRef.current?.signal)) {
+                summary += chunk;
+              }
+              // Only commit if the model returned something usable.
+              // Sub-30-char outputs are almost certainly junk (truncation, refusal).
+              if (summary.trim().length >= 30) {
+                rollingContextRef.current = summary;
+              } else {
+                rollingContextRef.current = previous;
+              }
+            } catch {
+              // Summarizer is best-effort. Keep the previous summary intact;
+              // the next user turn will retry with the unsummarized window
+              // (sendMessage already sends recent verbatim turns either way).
+              rollingContextRef.current = previous;
+            } finally {
+              summaryingRef.current = false;
+            }
+          })();
+        }
+      }
+    } catch (e) {
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      setIsStreaming(false);
+      pauseBgForAiRef.current = false;
+      if (
+        phaseNow === "followUp" &&
+        messageStreamOk &&
+        sessionPhaseRef.current === "followUp"
+      ) {
+        followUpAssistantTurnsRef.current += 1;
+        const turns = followUpAssistantTurnsRef.current;
+        const roundStartNow = roundStartTimeRef.current;
+        const remainingNow =
+          roundStartNow !== null
+            ? Math.max(0, ROUND_DURATION_MS - (Date.now() - roundStartNow))
+            : ROUND_DURATION_MS;
+        const outOfTime =
+          remainingNow <= FOLLOW_UP_AUTO_CLOSE_REMAINING_MS ||
+          roundTimedOutRef.current;
+        const sliceSegment = followUpSegmentRef.current === "slice";
+        const cap = sliceSegment
+          ? FOLLOW_UP_SLICE_SAFETY_CAP
+          : FOLLOW_UP_SAFETY_CAP;
+        const hitSafety = turns >= cap;
+        if (outOfTime || hitSafety) {
+          if (sliceSegment) {
+            if (sliceForceWrapUpRef.current) {
+              sliceForceWrapUpRef.current = false;
+              sliceAwaitingCandidateReplyRef.current = false;
+              setSliceGraceReply(false);
+              followUpSealedRef.current = true;
+              setFollowUpSealed(true);
+            } else if (!sliceAwaitingCandidateReplyRef.current) {
+              sliceAwaitingCandidateReplyRef.current = true;
+              setSliceGraceReply(true);
+            } else {
+              sliceAwaitingCandidateReplyRef.current = false;
+              setSliceGraceReply(false);
+              followUpSealedRef.current = true;
+              setFollowUpSealed(true);
+            }
+          } else if (!followUpAutoCloseScheduledRef.current) {
+            followUpAutoCloseScheduledRef.current = true;
+            queueMicrotask(() => {
+              void runFollowUpAutoClose();
+            });
+          }
+        }
+      }
+      if (
+        sessionPhaseRef.current === "coding" &&
+        !focusedMicRef.current
+      ) {
+        groqAmbientRef.current?.resumeFromFocus();
+      }
+    }
+    return true;
+  }
+
+  function handleMicPointerDown() {
+    if (
+      !speechSupported ||
+      sessionPhase === "feedback" ||
+      isStreaming ||
+      whisperTranscribing
+    ) {
+      return;
+    }
+    if (sessionPhase === "coding") {
+      focusedMicRef.current = true;
+    }
+    focusMicHeldRef.current = true;
+    setLiveCaption("");
+
+    // Pause ambient chunk so focused question audio doesn't bleed in.
+    groqAmbientRef.current?.pauseForFocus();
+
+    void (async () => {
+      try {
+        await focusMic.startHold(focusMicHeldRef);
+        if (focusMicHeldRef.current) {
+          setLiveCaption("Recording… release to transcribe");
+        }
+      } catch (e) {
+        const errText = e instanceof Error ? e.message : String(e);
+        setSpeechError(`Could not start microphone: ${errText}`);
+        focusMicHeldRef.current = false;
+        if (sessionPhaseRef.current === "coding") {
+          focusedMicRef.current = false;
+        }
+        focusMic.abort();
+        groqAmbientRef.current?.resumeFromFocus();
+      }
+    })();
+  }
+
+  async function handleMicPointerUp() {
+    if (!speechSupported || sessionPhase === "feedback") {
+      return;
+    }
+
+    focusMicHeldRef.current = false;
+    setLiveCaption("");
+    focusMic.setTranscribing(true);
+    let msg = "";
+    try {
+      const blob = await focusMic.stopToBlob();
+      if (blob) {
+        msg = (await transcribeWithGroqWhisper(blob)).trim();
+      }
+    } catch (e) {
+      const errText = e instanceof Error ? e.message : String(e);
+      setSpeechError(`Transcription failed: ${errText}`);
+    } finally {
+      focusMic.setTranscribing(false);
+      groqAmbientRef.current?.resumeFromFocus();
+    }
+
+    if (sessionPhaseRef.current === "coding") {
+      focusedMicRef.current = false;
+    }
+    if (msg) {
+      await sendUserMessage(msg);
+    }
+  }
+
+  async function enterSliceFollowUpPhase(): Promise<void> {
+    if (
+      sessionPhaseRef.current === "followUp" &&
+      followUpSegmentRef.current === "slice"
+    ) {
+      return;
+    }
+    if (isStreamingRef.current) {
+      return;
+    }
+
+    stopSnapshots();
+    followUpSegmentRef.current = "slice";
+    setFollowUpSegment("slice");
+    followUpAssistantTurnsRef.current = 0;
+    followUpAutoCloseScheduledRef.current = false;
+    followUpSealedRef.current = false;
+    setFollowUpSealed(false);
+    sliceAwaitingCandidateReplyRef.current = false;
+    sliceForceWrapUpRef.current = false;
+    setSliceGraceReply(false);
+    setSessionPhase("followUp");
+    sessionPhaseRef.current = "followUp";
+    const tNow = Date.now();
+    phaseStartTimeRef.current = tNow;
+    setPhaseStartTime(tNow);
+
+    const myGen = ++followUpGenRef.current;
+    const assistantId = crypto.randomUUID();
+    const testsSummary = formatTestsSummary(testAllPassed, testResults);
+
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "" },
+    ]);
+    setIsStreaming(true);
+
+    try {
+      for await (const chunk of streamAiApi({
+        kind: "sliceFollowUpOpener",
+        modelPresetId: utilityModelPresetIdRef.current,
+        candidateDescription: question.candidateDescription,
+        interviewerContext: question.interviewerContext,
+        finalCode: codeRef.current,
+        testsSummary,
+        questionDifficulty: question.difficulty,
+        priorChatHistory: messages,
+        ...(rollingContextRef.current
+          ? { rollingContext: rollingContextRef.current }
+          : {}),
+      }, streamAbortRef.current?.signal)) {
+        if (myGen !== followUpGenRef.current) {
+          return;
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+          )
+        );
+      }
+    } catch (e) {
+      if (myGen !== followUpGenRef.current) {
+        return;
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      if (myGen === followUpGenRef.current) {
+        setIsStreaming(false);
+        followUpAssistantTurnsRef.current = 1;
+      }
+    }
+  }
+
+  async function enterFinalFollowUpPhase(): Promise<void> {
+    stopSnapshots();
+    followUpSegmentRef.current = "final";
+    setFollowUpSegment("final");
+    followUpAssistantTurnsRef.current = 0;
+    followUpAutoCloseScheduledRef.current = false;
+    followUpSealedRef.current = false;
+    setFollowUpSealed(false);
+    sliceAwaitingCandidateReplyRef.current = false;
+    sliceForceWrapUpRef.current = false;
+    setSliceGraceReply(false);
+    setSessionPhase("followUp");
+    sessionPhaseRef.current = "followUp";
+    const tNow = Date.now();
+    phaseStartTimeRef.current = tNow;
+    setPhaseStartTime(tNow);
+
+    const myGen = ++followUpGenRef.current;
+    const assistantId = crypto.randomUUID();
+    const testsSummary = formatTestsSummary(testAllPassed, testResults);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+      },
+    ]);
+    setIsStreaming(true);
+
+    try {
+      for await (const chunk of streamAiApi({
+        kind: "followUpOpener",
+        modelPresetId: utilityModelPresetIdRef.current,
+        candidateDescription: question.candidateDescription,
+        interviewerContext: question.interviewerContext,
+        finalCode: codeRef.current,
+        testsSummary,
+        questionDifficulty: question.difficulty,
+        preAuthoredFollowUpTotal: question.followUps?.length ?? 0,
+        priorChatHistory: messages,
+        ...(rollingContextRef.current
+          ? { rollingContext: rollingContextRef.current }
+          : {}),
+      }, streamAbortRef.current?.signal)) {
+        if (myGen !== followUpGenRef.current) {
+          return;
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+          )
+        );
+      }
+    } catch (e) {
+      if (myGen !== followUpGenRef.current) {
+        return;
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      if (myGen === followUpGenRef.current) {
+        setIsStreaming(false);
+        followUpAssistantTurnsRef.current = 1;
+      }
+    }
+  }
+
+  async function proceedFromSliceToCoding(): Promise<void> {
+    if (isStreaming) {
+      return;
+    }
+
+    followUpGenRef.current += 1;
+    followUpSealedRef.current = false;
+    setFollowUpSealed(false);
+    sliceAwaitingCandidateReplyRef.current = false;
+    sliceForceWrapUpRef.current = false;
+    setSliceGraceReply(false);
+    followUpAutoCloseScheduledRef.current = false;
+    setSessionPhase("coding");
+    sessionPhaseRef.current = "coding";
+    const tNow = Date.now();
+    phaseStartTimeRef.current = tNow;
+    setPhaseStartTime(tNow);
+    if (codingStartedAt === null) {
+      setCodingStartedAt(tNow);
+    }
+    startSnapshots(
+      () => codeRef.current,
+      () => formatTranscriptLog(transcriptRef.current)
+    );
+
+    if (tryScheduleBankedCodingEscalation()) {
+      return;
+    }
+
+    const remainingMs = getRemainingRoundMsNow();
+    const autonomousThresholdMs =
+      ROUND_THRESHOLDS.forcedStopTriggerMs + 3 * 60_000;
+    if (
+      baselineSolvedAtRef.current !== null &&
+      remainingMs > autonomousThresholdMs
+    ) {
+      const minutesLeft = Math.round(remainingMs / 60_000);
+      pendingProactiveEscalationHintRef.current = `Autonomous escalation unlocked: roughly ${minutesLeft} min remain. Propose ONE concrete escalation in the same problem family and ask them to implement it in the editor (update code, run tests). One ask, then wait.`;
+      pendingProactiveBankedRef.current = false;
+      pendingProactiveAutonomousRef.current = true;
+      await runCodingEscalationNudge();
+      return;
+    }
+
+    await enterFinalFollowUpPhase();
+  }
+
+  async function handleImDone() {
+    if (isStreaming || sessionPhase !== "coding") {
+      return;
+    }
+    if (runMode === "dry-run" && traceContent.trim().length === 0) {
+      return;
+    }
+
+    await enterSliceFollowUpPhase();
+  }
+
+  async function handleSkipToFinalFollowUp() {
+    if (isStreaming) {
+      return;
+    }
+    if (
+      sessionPhaseRef.current === "coding" &&
+      runMode === "dry-run" &&
+      traceContent.trim().length === 0
+    ) {
+      return;
+    }
+    skipRemainingBankedFollowUps();
+    await enterFinalFollowUpPhase();
+  }
+
+  async function handleProceedFromSlice() {
+    if (
+      isStreaming ||
+      sessionPhase !== "followUp" ||
+      followUpSegment !== "slice"
+    ) {
+      return;
+    }
+    await proceedFromSliceToCoding();
+  }
+
+  async function handleSliceToFinalQuestions() {
+    if (isStreaming || sessionPhase !== "followUp") {
+      return;
+    }
+    skipRemainingBankedFollowUps();
+    await enterFinalFollowUpPhase();
+  }
+
+  async function runFinalFeedbackStream() {
+    if (sessionPhaseRef.current === "feedback") {
+      return;
+    }
+    if (isStreamingRef.current) {
+      roundTimeoutFeedbackPendingRef.current = true;
+      return;
+    }
+
+    followUpGenRef.current += 1;
+    openingGenRef.current += 1;
+    escalationNudgeGenRef.current += 1;
+    stopSnapshots();
+    groqAmbientRef.current?.stop();
+    setSessionPhase("feedback");
+    sessionPhaseRef.current = "feedback";
+    const tNow = Date.now();
+    phaseStartTimeRef.current = tNow;
+    setPhaseStartTime(tNow);
+
+    const feedbackId = crypto.randomUUID();
+    const historyForFeedback = [...messages];
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: feedbackId,
+        role: "assistant",
+        content: "",
+      },
+    ]);
+    setIsStreaming(true);
+
+    try {
+      for await (const chunk of streamAiApi({
+        kind: "feedback",
+        modelPresetId: modelPresetIdRef.current,
+        question: problemStatement,
+        fullTranscript: formatTranscriptLog(transcriptRef.current),
+        snapshots: getSampledFeedbackSnapshots(),
+        finalCode: codeRef.current,
+        chatHistory: historyForFeedback,
+        ...(traceContent.trim() ? { traceContent: traceContent.trim() } : {}),
+        paceReport: buildPaceReport(),
+        codingVoiceReport: buildCodingVoiceReport(transcriptRef.current),
+      }, streamAbortRef.current?.signal)) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === feedbackId ? { ...m, content: m.content + chunk } : m
+          )
+        );
+      }
+    } catch (e) {
+      const errText = e instanceof Error ? e.message : String(e);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === feedbackId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+    } finally {
+      setIsStreaming(false);
+      setSessionPersistenceActive(false);
+      clearPersistedInterviewSession(question.id);
+    }
+  }
+
+  async function handleContinueToFeedback() {
+    if (
+      isStreaming ||
+      sessionPhase !== "followUp" ||
+      followUpSegment !== "final"
+    ) {
+      return;
+    }
+    await runFinalFeedbackStream();
+  }
+
+  runFinalFeedbackRef.current = () => {
+    void runFinalFeedbackStream();
+  };
+
+  const MAX_LIMITED_RUNS = 3;
+
+  async function handleRunTests() {
+    if (forcedWrapRef.current) {
+      // Editor locked for verbal wrap-up — no further runs accepted.
+      return;
+    }
+    if (!codeRef.current.trim()) {
+      setTestRunError("Add code before running tests.");
+      setTestResults(null);
+      setTestAllPassed(null);
+      return;
+    }
+    if (runMode === "limited" && runCountRef.current >= MAX_LIMITED_RUNS) {
+      setTestRunError(`Run limit reached (${MAX_LIMITED_RUNS} runs used).`);
+      return;
+    }
+    if (runMode === "dry-run") {
+      return; // button is hidden in dry-run mode
+    }
+    if (runMode === "limited") {
+      const next = runCountRef.current + 1;
+      runCountRef.current = next;
+      setRunCount(next);
+    }
+    setTestRunLoading(true);
+    setTestRunError(null);
+    try {
+      const res = await fetch("/api/judge0", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: codeRef.current,
+          testCases: question.testCases,
+          hiddenTestCases: question.hiddenTestCases ?? [],
+          entryFunction: question.entryFunction,
+        }),
+      });
+      const data: unknown = await res.json();
+      if (!res.ok) {
+        const err =
+          typeof data === "object" &&
+          data !== null &&
+          "error" in data &&
+          typeof (data as { error: unknown }).error === "string"
+            ? (data as { error: string }).error
+            : "Request failed";
+        setTestRunError(err);
+        setTestResults(null);
+        setTestAllPassed(null);
+        return;
+      }
+      if (
+        typeof data !== "object" ||
+        data === null ||
+        !("passed" in data) ||
+        !("results" in data) ||
+        typeof (data as { passed: unknown }).passed !== "boolean" ||
+        !Array.isArray((data as { results: unknown }).results)
+      ) {
+        setTestRunError("Invalid response from server");
+        setTestResults(null);
+        setTestAllPassed(null);
+        return;
+      }
+      const { passed, results, hiddenPassed, hiddenResults } = data as RunCodeResult;
+      setTestResults(results);
+      setTestAllPassed(passed);
+
+      // First-ever test run: detect "brute-force skipped" — candidate's first
+      // submitted code passes every visible and hidden case without an
+      // observed brute-force → optimal arc. Feeds the pace report.
+      if (!firstTestRunConsumedRef.current) {
+        firstTestRunConsumedRef.current = true;
+        if (passed && hiddenPassed) {
+          bruteForceSkippedRef.current = true;
+        }
+      }
+
+      const queuedNudges: string[] = [];
+
+      // Progressive escalation: fire when visible tests pass during coding.
+      // We pick the strongest available HINT (banked > autonomous) and fire a
+      // PROACTIVE interviewer message right away — no need to wait for the
+      // candidate to type something. Forced-wrap mode short-circuits the whole
+      // thing (we're about to hand off, no point in escalating).
+      if (
+        passed &&
+        sessionPhaseRef.current === "coding" &&
+        !forcedWrapRef.current
+      ) {
+        const now = Date.now();
+        if (baselineSolvedAtRef.current === null) {
+          baselineSolvedAtRef.current = now;
+          setBaselineSolvedAt(now);
+        }
+
+        queueMicrotask(() => {
+          void enterSliceFollowUpPhase();
+        });
+      }
+
+      // If any hidden tests failed, append (do not overwrite) a nudge.
+      if (!hiddenPassed && hiddenResults.length > 0) {
+        const failedCases = hiddenResults.filter((r) => !r.passed);
+        const descriptions = (question.hiddenTestCases ?? [])
+          .filter((_, i) => i < hiddenResults.length && !hiddenResults[i].passed)
+          .map((tc) => tc.description)
+          .filter((d): d is string => typeof d === "string");
+        const summary =
+          descriptions.length > 0
+            ? descriptions.join("; ")
+            : `${failedCases.length} hidden edge-case${failedCases.length !== 1 ? "s" : ""}`;
+        queuedNudges.push(
+          `Candidate's code failed hidden test case(s): ${summary}.`
+        );
+      }
+
+      if (queuedNudges.length > 0) {
+        pendingHiddenNudgeRef.current = [
+          ...(pendingHiddenNudgeRef.current ? [pendingHiddenNudgeRef.current] : []),
+          ...queuedNudges,
+        ].join(" ");
+      }
+    } catch (e) {
+      setTestRunError(e instanceof Error ? e.message : String(e));
+      setTestResults(null);
+      setTestAllPassed(null);
+    } finally {
+      setTestRunLoading(false);
+    }
+  }
+
+  function handleResetSession() {
+    if (isStreaming) {
+      return;
+    }
+    followUpGenRef.current += 1;
+    followUpAssistantTurnsRef.current = 0;
+    followUpAutoCloseScheduledRef.current = false;
+    followUpSealedRef.current = false;
+    setFollowUpSealed(false);
+    sliceAwaitingCandidateReplyRef.current = false;
+    sliceForceWrapUpRef.current = false;
+    setSliceGraceReply(false);
+    followUpSegmentRef.current = "final";
+    setFollowUpSegment("final");
+    stopSnapshots();
+    // The useGroqAmbient hook will tear down on the next render when phase
+    // leaves "coding"; force an immediate stop here too so the mic releases.
+    groqAmbientRef.current?.stop();
+    groqAmbientRef.current = null;
+    focusMic.abort();
+    focusMicHeldRef.current = false;
+    focusedMicRef.current = false;
+    pauseBgForAiRef.current = false;
+    setSessionPhase("clarifying");
+    setTranscript([]);
+    transcriptRef.current = [];
+    setLiveCaption("");
+    setSpeechError(null);
+    setTestResults(null);
+    setTestAllPassed(null);
+    setTestRunError(null);
+    setTestRunLoading(false);
+    setCodingStartedAt(null);
+    roundStartTimeRef.current = null;
+    roundTimedOutRef.current = false;
+    setRoundStartTime(null);
+    phaseStartTimeRef.current = null;
+    setPhaseStartTime(null);
+    phaseBudgetNudgedRef.current = {};
+    rollingContextRef.current = null;
+    summaryingRef.current = false;
+    runCountRef.current = 0;
+    setRunCount(0);
+    pendingHiddenNudgeRef.current = null;
+    pendingProactiveEscalationHintRef.current = null;
+    pendingProactiveBankedRef.current = false;
+    pendingProactiveAutonomousRef.current = false;
+    escalationNudgeGenRef.current += 1;
+    lastSentAmbientCutoffRef.current = 0;
+    bruteForceSkippedRef.current = false;
+    firstTestRunConsumedRef.current = false;
+    followUpAutoCloseByTimeCheckedRef.current = false;
+    baselineSolvedAtRef.current = null;
+    setBaselineSolvedAt(null);
+    codingEscalationStepRef.current = 0;
+    forcedWrapRef.current = false;
+    setForcedWrap(false);
+    forcedWrapHintPendingRef.current = false;
+    forcedHandoffScheduledRef.current = false;
+    forcedWrapOpenerGenRef.current += 1;
+    currentFollowUpIndexRef.current = 0;
+    setCurrentFollowUpIndex(0);
+    followUpsReachedCountRef.current = 0;
+    setFollowUpsReachedCount(0);
+    setTraceContent("");
+    restoredSessionRef.current = false;
+    setSessionPersistenceActive(true);
+    clearPersistedInterviewSession(question.id);
+    setEditorInitialCode(defaultInitialValue);
+    setSessionResetKey((k) => k + 1);
+    codeRef.current = defaultInitialValue;
+  }
+
+  handleRunTestsRef.current = () => {
+    void handleRunTests();
+  };
+  handleImDoneRef.current = () => {
+    void handleImDone();
+  };
+
+  useCodingShortcuts({
+    sessionPhaseRef,
+    testRunLoadingRef,
+    isStreamingRef,
+    onRunTests: () => handleRunTestsRef.current(),
+    onImDone: () => handleImDoneRef.current(),
+  });
+
+  const codingElapsedLabel =
+    sessionPhase === "coding" && codingStartedAt !== null
+      ? formatElapsedMs(codingNowTick - codingStartedAt)
+      : null;
+
+  const roundRemainingMs =
+    roundStartTime !== null
+      ? Math.max(0, ROUND_DURATION_MS - (roundNowTick - roundStartTime))
+      : null;
+  const roundCountdownLabel =
+    roundRemainingMs !== null ? formatElapsedMs(roundRemainingMs) : null;
+  const roundCountdownUrgency =
+    roundRemainingMs !== null && roundRemainingMs <= 60_000
+      ? "text-red-400"
+      : roundRemainingMs !== null && roundRemainingMs <= 300_000
+        ? "text-yellow-400"
+        : "text-zinc-300";
+
+  const phaseBudgetForHeader = PHASE_BUDGET_MS[sessionPhase];
+  const phaseElapsedForHeader =
+    phaseStartTime !== null ? Math.max(0, roundNowTick - phaseStartTime) : null;
+  const showPhasePill =
+    phaseElapsedForHeader !== null &&
+    sessionPhase !== "feedback" &&
+    sessionPhase !== "followUp";
+  const phaseOverBudget =
+    phaseBudgetForHeader !== null &&
+    phaseElapsedForHeader !== null &&
+    phaseElapsedForHeader > phaseBudgetForHeader;
+  const phaseNearBudget =
+    !phaseOverBudget &&
+    phaseBudgetForHeader !== null &&
+    phaseElapsedForHeader !== null &&
+    phaseElapsedForHeader > phaseBudgetForHeader * 0.75;
+  const phasePillClasses = phaseOverBudget
+    ? "border-red-500/50 bg-red-500/10 text-red-300"
+    : phaseNearBudget
+      ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+      : "border-zinc-700 bg-zinc-800/60 text-zinc-300";
+  const phasePillTitle =
+    phaseBudgetForHeader !== null
+      ? phaseOverBudget
+        ? `Over ${phaseLabel(sessionPhase)} budget (~${Math.round(phaseBudgetForHeader / 60_000)}m) — move on soon`
+        : `Suggested ${phaseLabel(sessionPhase)} budget ~${Math.round(phaseBudgetForHeader / 60_000)}m`
+      : `${phaseLabel(sessionPhase)} phase`;
+
+  if (sessionBoot === "pending") {
+    return (
+      <div className="flex h-screen items-center justify-center bg-zinc-950 text-zinc-300">
+        <p className="text-sm text-zinc-400">Loading session…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen min-h-0 flex-col bg-zinc-950 text-zinc-100">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/90 px-3 py-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-zinc-100">
+            {question.title}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-500">
+            {sessionPhase === "coding"
+              ? "Ctrl+Enter run tests · Ctrl+D mark done"
+              : sessionPhase === "followUp"
+                ? "Follow-up questions — reply in chat, then continue to final feedback"
+                : "\u00a0"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          {showPhasePill && (
+            <span
+              className={`rounded-md border px-2 py-0.5 font-mono text-[11px] tabular-nums ${phasePillClasses}`}
+              aria-label={`${phaseLabel(sessionPhase)} phase elapsed`}
+              title={phasePillTitle}
+            >
+              {phaseLabel(sessionPhase)} {formatElapsedMs(phaseElapsedForHeader!)}
+              {phaseOverBudget ? " · over" : ""}
+            </span>
+          )}
+          {roundCountdownLabel !== null && (
+            <span
+              className={`font-mono text-sm tabular-nums ${roundCountdownUrgency}`}
+              aria-label="Round time remaining"
+              title="Time remaining in round"
+            >
+              {roundCountdownLabel}
+            </span>
+          )}
+          {codingElapsedLabel !== null && roundCountdownLabel === null && (
+            <span
+              className="font-mono text-sm tabular-nums text-zinc-300"
+              aria-label="Coding timer"
+            >
+              {codingElapsedLabel}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleResetSession}
+            disabled={isStreaming}
+            className="rounded-md border border-zinc-600 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Reset session
+          </button>
+        </div>
+      </header>
+      <div className="flex min-h-0 flex-1">
+        <div
+          className={`flex min-h-0 min-w-0 flex-col transition-[width] duration-200 ease-out ${
+            chatOpen ? "w-[65%] shrink-0 border-r border-zinc-800" : "w-full flex-1"
+          }`}
+        >
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col">
+              <Editor
+                key={`${question.id}-${sessionResetKey}`}
+                initialValue={editorInitialCode}
+                readOnly={editorLocked}
+                padRealism={padRealism && showEditorTools}
+                onChange={(value) => {
+                  codeRef.current = value;
+                }}
+              />
+            {showEditorTools && (
+              <>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-800 bg-zinc-900/80 px-3 py-2">
+                  <span className="mr-auto text-[11px] text-zinc-500">
+                    {runMode !== "dry-run" ? "Ctrl+Enter" : "Trace mode — no execution"}
+                  </span>
+                  <label className="flex items-center gap-1 text-[11px] text-zinc-500">
+                    Mode:
+                    <select
+                      value={runMode}
+                      onChange={(e) =>
+                        setRunMode(
+                          e.target.value as "standard" | "limited" | "dry-run"
+                        )
+                      }
+                      className="rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-300 focus:outline-none"
+                    >
+                      <option value="standard">Standard</option>
+                      <option value="limited">Limited (3 runs)</option>
+                      <option value="dry-run">Dry-run</option>
+                    </select>
+                  </label>
+                  {runMode !== "dry-run" && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRunTests()}
+                      disabled={
+                        testRunLoading ||
+                        question.testCases.length === 0 ||
+                        (runMode === "limited" && runCount >= MAX_LIMITED_RUNS)
+                      }
+                      className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {testRunLoading
+                        ? "Running…"
+                        : runMode === "limited"
+                          ? `Run tests (${runCount}/${MAX_LIMITED_RUNS})`
+                          : "Run tests"}
+                    </button>
+                  )}
+                </div>
+                {runMode === "dry-run" ? (
+                  <div className="shrink-0 border-t border-zinc-800 bg-zinc-900/60 px-3 py-2">
+                    <p className="mb-1 text-[11px] text-zinc-500">
+                      Trace table — step through your algorithm (variables, state changes):
+                    </p>
+                    <textarea
+                      value={traceContent}
+                      onChange={(e) => setTraceContent(e.target.value)}
+                      placeholder="e.g.&#10;step=1, left=0, right=4, mid=2, nums[mid]=3&#10;step=2, left=3, right=4, mid=3, nums[mid]=5"
+                      rows={5}
+                      className="w-full resize-y rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+                    />
+                  </div>
+                ) : (
+                  <ResizableTestResultsSection
+                    results={testResults}
+                    allPassed={testAllPassed}
+                    loading={testRunLoading}
+                    error={testRunError}
+                  />
+                )}
+              </>
+            )}
+            </div>
+          </div>
+        </div>
+        {chatOpen && (
+          <div className="flex min-h-0 w-[35%] shrink-0 flex-col">
+            <ChatPanel
+              messages={messages}
+              modelPresetId={modelPresetId}
+              onModelPresetIdChange={setModelPresetId}
+              utilityModelPresetId={utilityModelPresetId}
+              onUtilityModelPresetIdChange={setUtilityModelPresetId}
+              padRealism={padRealism}
+              onPadRealismChange={setPadRealism}
+              humanLatency={humanLatency}
+              onHumanLatencyChange={setHumanLatency}
+              onSendMessage={sendUserMessage}
+              sessionPhase={sessionPhase}
+              followUpSegment={followUpSegment}
+              hasPendingBankedVariant={pendingBankedEscalation !== null}
+              onImDone={() => void handleImDone()}
+              onSkipToFinalFollowUp={() => void handleSkipToFinalFollowUp()}
+              onProceedFromSlice={() => void handleProceedFromSlice()}
+              onSliceToFinalQuestions={() => void handleSliceToFinalQuestions()}
+              imDoneDisabled={
+                sessionPhase === "coding" &&
+                runMode === "dry-run" &&
+                traceContent.trim().length === 0
+              }
+              imDoneDisabledReason="Fill in the trace table before marking done (dry-run mode)."
+              onContinueToFeedback={() => void handleContinueToFeedback()}
+              inputDisabled={isStreaming}
+              speechSupported={speechSupported}
+              whisperTranscribing={whisperTranscribing}
+              backgroundListeningActive={
+                sessionPhase === "coding" &&
+                speechSupported &&
+                !isStreaming
+              }
+              ambientTranscript={transcript}
+              liveCaption={liveCaption}
+              speechError={speechError}
+              onDismissSpeechError={() => setSpeechError(null)}
+              onMicPointerDown={handleMicPointerDown}
+              onMicPointerUp={() => {
+                void handleMicPointerUp();
+              }}
+              isStreaming={isStreaming}
+              followUpSealed={followUpSealed}
+              sliceGraceReply={sliceGraceReply}
+              onOpenEditorPlanning={handleOpenEditorPlanning}
+            />
+          </div>
+        )}
+      </div>
+      <ChatToggleButton chatOpen={chatOpen} onClick={() => setChatOpen((o) => !o)} />
+    </div>
+  );
+}
