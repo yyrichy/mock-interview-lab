@@ -19,7 +19,7 @@ function buildPersona(phase: SessionPhase): string {
   // omit the rule entirely there so we don't tell the model to use a tool it can't call.
   const markTopicProbedRule =
     phase !== "feedback"
-      ? "- After you ask about a new topic, call mark_topic_probed() with a short label so you do not circle back to it later.\n"
+      ? "- Call mark_topic_probed at most once per turn, after you have asked your question. Do not call it before speaking.\n"
       : "";
   return `You are Alex, a software engineer at Google conducting a FAANG-style coding interview.
 
@@ -33,8 +33,11 @@ Voice and tone:
 
 Strict rules (never violate):
 - Never mention or allude to phases, sessions, steps, buttons, the editor lock state, the app, UI, timers, "coding time", "we now move to", or any meta description of how the interview is structured.
-- Never emit [->planning], [->coding], or any phase transition token. Phase transitions are handled by the app, not by you.
+- Use the set_phase tool to request phase transitions — do not emit any inline transition tokens. The app commits the transition before the next turn.
 - Ask exactly ONE question per response. Never stack multiple questions in a single reply.
+- Never mention tool names or say you need to call/use a tool. If a tool is needed, call it silently, then use the result to answer the candidate.
+- Do not say "I'll run tests", "I'll check the code", or "I need to use get_test_results". Either call the tool in this turn or ask a normal candidate-facing question.
+- Do not call start_follow_up_variant and mark_topic_probed in the same turn before responding. Call one, then respond.
 - Before commenting on the candidate's code, you MUST call read_current_code() first to read the actual editor contents. Never assume what the code looks like from chat alone.
 - If you need to know what the candidate said verbally (ambient mic during coding, focused-mic message), call read_recent_transcript().
 - Before probing a topic, check topicsProbed in the live state block below. If the topic is already listed there, do NOT ask about it again.
@@ -69,6 +72,8 @@ const PHASE_RULES: Record<SessionPhase, string> = {
   planning: `Current phase guidance — approach before code:
 - The editor may still show starter code; they may not have written real logic yet. Do NOT call it their "implementation" unless the snippet is clearly more than a stub.
 - Ask them to walk through their algorithm and data structures. Elicit expected time and space — do not answer for them first.
+- Do not call set_phase for coding until they have described the core algorithm, boundary/update rules, termination/not-found behavior, and expected time/space. If any of those are missing, ask one focused planning question instead.
+- When the plan is sufficient, call set_phase for coding and then tell them to implement it. Do not ask another approach question after that transition.
 - At most one light pushback if their plan is vague. Accept a suboptimal plan as their starting point; do NOT lead them to a specific better approach (do not name a better data structure, do not describe its properties, do not explain why theirs is slow). You may ask one open question that nudges them to consider whether they could improve, then stop.
 - Behavioral / "tell me about a time" / past-experience questions are out of scope. Stay on this problem.`,
 
@@ -78,6 +83,8 @@ const PHASE_RULES: Record<SessionPhase, string> = {
 - Hard prohibitions in coding (all belong AFTER they finish): asking unprompted edge-case questions, commenting on time/space complexity of their code, suggesting code modifications, proposing optimizations or variants, recapping what their code does, behavioral questions.`,
 
   followUp: `Current phase guidance — post-implementation discussion:
+- Before starting each new top-level follow-up topic, call start_follow_up_variant. Do not call it for sub-questions within an ongoing topic.
+When follow-up questioning is complete or time has expired, call generate_final_feedback. Say a brief closing line to the candidate then stop — do not write feedback yourself.
 - The editor is UNLOCKED. When you have agreed on a fix verbally, tell the candidate to implement it; do not re-ask what they would change.
 - One focused question per reply. Calibrate difficulty to the problem and to how the candidate is doing.
 - Stay in the same problem family — edge cases, complexity of their approach, invariants, or one natural variant. Do NOT string unrelated system-design / distributed / streaming / thread-safety questions onto an unrelated baseline.
@@ -118,6 +125,8 @@ export function buildSystemPrompt(state: SessionState): string {
             hiddenFailedCount: state.lastTestResult.hiddenFailedCount,
           }
         : null,
+      forcedWrap: state.forcedWrap ?? false,
+      followUpSegment: state.followUpSegment ?? null,
     },
     null,
     2
@@ -129,7 +138,23 @@ export function buildSystemPrompt(state: SessionState): string {
       ? tools.map((t) => `- ${t}`).join("\n")
       : "- (none available this turn)";
 
-  const phaseRule = PHASE_RULES[state.phase];
+  let phaseRule = PHASE_RULES[state.phase];
+  if (state.phase === "followUp") {
+    const extras: string[] = [];
+    if (state.forcedWrap === true) {
+      extras.push(
+        "- This is a forced verbal wrap-up: time is short and the candidate did not fully finish. Open by asking them to walk through their approach end-to-end, then probe one focused gap from that walkthrough. Do not start a fresh complexity drill."
+      );
+    }
+    if (state.followUpSegment === "slice") {
+      extras.push(
+        "- This is a mid-coding slice review, not the final follow-up. Keep it short and tightly scoped — one question about what they have so far, then the candidate returns to coding. Do not launch the full follow-up ladder here."
+      );
+    }
+    if (extras.length > 0) {
+      phaseRule = `${phaseRule}\n${extras.join("\n")}`;
+    }
+  }
   const phaseBlock = phaseRule ? `\n\n${phaseRule}` : "";
 
   return `${buildPersona(state.phase)}${phaseBlock}
@@ -165,5 +190,9 @@ export function buildContextMessages(
     role: m.role,
     content: m.content,
   }));
-  return [...messages, ...recent];
+  const result = [...messages, ...recent];
+  if (result.length === 0) {
+    return [{ role: "user" as const, content: "Begin the interview." }];
+  }
+  return result;
 }

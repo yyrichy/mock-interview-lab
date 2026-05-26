@@ -4,7 +4,12 @@
 // handles `opening` and `feedback` until the Day 2 migration.
 
 import { createOpenAI } from "@ai-sdk/openai";
-import { createDataStreamResponse, streamText } from "ai";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  stepCountIs,
+  streamText,
+} from "ai";
 import { NextResponse, type NextRequest } from "next/server";
 
 import type { ChatMessage, TranscriptEntry } from "@/lib/chat";
@@ -75,12 +80,14 @@ export async function POST(req: NextRequest) {
     // state.transcript internally, so we merge here.
     const stateForTurn: SessionState = {
       ...sessionState,
-      transcript,
+      transcript: transcript ?? [],
     };
 
     const system = buildSystemPrompt(stateForTurn);
     const contextMessages = buildContextMessages(rollingSummary, messages);
     const tools = buildTools(stateForTurn);
+    const isOpeningTurn = messages.length === 0;
+    const toolsForTurn = isOpeningTurn ? {} : tools;
 
     if (process.env.NODE_ENV === "development") {
       console.log("[interviewer-agent]", {
@@ -93,27 +100,118 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Wrap streamText in a data-stream response so the new rolling summary
-    // can ride the same stream as a typed data event. Model output and
-    // summary call run in parallel; the response closes once both writers
-    // finish. TTFB is unaffected by summary latency.
-    return createDataStreamResponse({
-      execute: async (dataStream) => {
+    // Action tools mutate app-owned state on the client. Their results are
+    // forwarded over the data stream so the client can commit before the next
+    // turn.
+    const ACTION_TOOLS = [
+      "mark_topic_probed",
+      "run_tests",
+      "set_phase",
+      "start_follow_up_variant",
+      "generate_final_feedback",
+    ];
+
+    // Wrap streamText in a UI message stream so the new rolling summary and
+    // action-tool results ride the same response. Model output and summary
+    // call run in parallel; the response closes once both writers finish.
+    // TTFB is unaffected by summary latency. Data parts are emitted with
+    // `transient: true` so the SDK does not persist them as message history —
+    // they are side-effect channels, not message content.
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        console.log("[interviewer-agent] raw body messages", JSON.stringify(body.messages, null, 2));
+        console.log("[interviewer-agent] raw body sessionState.transcript", JSON.stringify(body.transcript?.slice(-3) ?? [], null, 2));
         const result = streamText({
-          model: groq("llama-3.3-70b-versatile"),
+          model: groq.chat("meta-llama/llama-4-scout-17b-16e-instruct"),
           system,
           messages: contextMessages,
-          tools,
-          maxSteps: 8,
+          tools: toolsForTurn,
+          stopWhen: stepCountIs(5),
+          // summarizeSession below does not receive this signal — it will run
+          // to its 30s timeout on disconnect. Fix requires adding
+          // signal?: AbortSignal to summarize.ts — tracked for post-Day-2.
           abortSignal: req.signal,
+          onError({ error }) {
+            if (process.env.NODE_ENV === "development") {
+              console.error("[interviewer-agent] stream error", error);
+              if (error && typeof error === "object") {
+                const obj = error as Record<string, unknown>;
+                if ("responseBody" in obj) {
+                  console.error(
+                    "[interviewer-agent] response body",
+                    obj.responseBody
+                  );
+                }
+                if ("cause" in obj) {
+                  console.error("[interviewer-agent] error cause", obj.cause);
+                }
+              }
+            }
+            let message: string;
+            if (error instanceof Error) {
+              message = error.message;
+            } else if (typeof error === "string") {
+              message = error;
+            } else if (error && typeof error === "object") {
+              const obj = error as Record<string, unknown>;
+              if (typeof obj.message === "string") {
+                message = obj.message;
+              } else if (typeof obj.error === "string") {
+                message = obj.error;
+              } else {
+                try {
+                  message = JSON.stringify(error);
+                } catch {
+                  message = "Unknown error";
+                }
+              }
+            } else {
+              message = String(error);
+            }
+            writer.write({
+              type: "data-error",
+              data: { message },
+              transient: true,
+            });
+          },
+          experimental_repairToolCall: async ({ toolCall, error }) => {
+            if (process.env.NODE_ENV === "development") {
+              console.warn("[interviewer-agent] tool call rejected — dropping", {
+                tool: toolCall.toolName,
+                toolCall,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+            return null;
+          },
+          onStepFinish({ text, toolCalls, toolResults, finishReason, usage }) {
+            if (process.env.NODE_ENV === "development") {
+              console.log("[interviewer-agent] step", {
+                finishReason,
+                textLen: text?.length ?? 0,
+                toolCalls: toolCalls?.map((tc) => tc.toolName) ?? [],
+                toolResults: toolResults?.map((tr) => tr.toolName) ?? [],
+                usage,
+              });
+            }
+            for (const tr of toolResults ?? []) {
+              if (ACTION_TOOLS.includes(tr.toolName)) {
+                if (process.env.NODE_ENV === "development") {
+                  console.log("[interviewer-agent] action tool result", {
+                    tool: tr.toolName,
+                    result: tr.output,
+                  });
+                }
+                writer.write({
+                  type: "data-tool_result",
+                  data: { tool: tr.toolName, result: tr.output },
+                  transient: true,
+                });
+              }
+            }
+          },
         });
-        try {
-          result.mergeIntoDataStream(dataStream);
-        } catch (err) {
-          dataStream.writeData({
-            error: err instanceof Error ? err.message : "Stream error",
-          });
-        }
+        writer.merge(result.toUIMessageStream());
 
         if (summarizeFired) {
           try {
@@ -123,7 +221,11 @@ export async function POST(req: NextRequest) {
               groqKey
             );
             if (newSummary !== rollingSummary) {
-              dataStream.writeData({ updatedSummary: newSummary });
+              writer.write({
+                type: "data-summary",
+                data: { value: newSummary },
+                transient: true,
+              });
             }
           } catch {
             // Silent fallback — summary failure must never break the turn.
@@ -131,6 +233,8 @@ export async function POST(req: NextRequest) {
         }
       },
     });
+
+    return createUIMessageStreamResponse({ stream });
   } catch (e) {
     // Intentionally different from legacy /api/ai error shape — client must
     // handle both shapes until the Day 2 migration is complete.

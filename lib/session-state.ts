@@ -50,6 +50,10 @@ export type SessionState = Readonly<{
   /** Updated via mark_topic_probed tool only — never mutated directly by the agent. */
   topicsProbed: ReadonlyArray<string>;
   transcript: ReadonlyArray<TranscriptEntry>;
+  /** Set during a forced verbal wrap-up transition — agent should ask for walkthrough. */
+  forcedWrap?: boolean;
+  /** "slice" if in the mid-coding slice segment, "final" if in the post-coding final segment. */
+  followUpSegment?: "slice" | "final";
   question: Pick<
     Question,
     | "id"
@@ -68,7 +72,10 @@ export type ToolName =
   | "read_recent_transcript"
   | "get_test_results"
   | "run_tests"
-  | "mark_topic_probed";
+  | "mark_topic_probed"
+  | "set_phase"
+  | "start_follow_up_variant"
+  | "generate_final_feedback";
 
 export const TOOL_PERMISSIONS: Readonly<
   Record<ToolName, ReadonlyArray<SessionPhase>>
@@ -79,6 +86,9 @@ export const TOOL_PERMISSIONS: Readonly<
   get_test_results: ["coding", "followUp", "feedback"],
   run_tests: ["coding", "followUp"],
   mark_topic_probed: ["clarifying", "planning", "coding", "followUp"],
+  set_phase: ["clarifying", "planning", "coding", "followUp"],
+  start_follow_up_variant: ["followUp"],
+  generate_final_feedback: ["followUp"],
 };
 
 // LLM tool-call payloads arrive as raw strings. Use assertKnownTool at the

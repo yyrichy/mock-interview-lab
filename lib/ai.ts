@@ -17,6 +17,11 @@ import {
   styleDisplayName,
 } from "@/lib/interviewer-presets";
 
+// PHASE_BUDGET_MS moved to lib/phase-config.ts (client-safe — re-exported
+// from there so existing imports of @/lib/ai continue to work).
+import { PHASE_BUDGET_MS } from "./phase-config";
+export { PHASE_BUDGET_MS };
+
 export type FollowUpSegment = "slice" | "final";
 
 export type FollowUpTurnContext = {
@@ -131,14 +136,7 @@ Run this segment: one focused question per reply, calibrate **difficulty** to th
   feedback: "",
 };
 
-/** Soft budgets per phase (ms). Used to inject a one-time nudge when exceeded. */
-export const PHASE_BUDGET_MS: Record<SessionPhase, number | null> = {
-  clarifying: 5 * 60 * 1000,
-  planning: 8 * 60 * 1000,
-  coding: 35 * 60 * 1000,
-  followUp: null,
-  feedback: null,
-};
+
 
 const FEEDBACK_SYSTEM_PROMPT = `You are Alex. The live conversation is over; you now write the candidate's structured written feedback only. Be honest and specific.
 

@@ -12,7 +12,12 @@ import { ChatPanel } from "@/components/ChatPanel";
 import { ChatToggleButton } from "@/components/ChatToggleButton";
 import { Editor } from "@/components/Editor";
 import { ResizableTestResultsSection } from "@/components/ResizableTestResultsSection";
-import { streamAiApi } from "@/lib/ai-client";
+import {
+  streamAiApi,
+  streamInterviewerApi,
+  type InterviewerDataEvent,
+} from "@/lib/ai-client";
+import type { SessionState, TestRunSummary } from "@/lib/session-state";
 import {
   AI_MODEL_PRESET_STORAGE_KEY,
   DEFAULT_AI_MODEL_PRESET_ID,
@@ -49,10 +54,9 @@ import {
   FOLLOW_UP_SLICE_SAFETY_CAP,
 } from "@/lib/follow-up-config";
 import { FOLLOW_UP_SAFETY_CAP, ROUND_DURATION_MS } from "@/lib/interview-limits";
-import type { FollowUpSegment } from "@/lib/ai";
-import { PHASE_BUDGET_MS, type PaceReport } from "@/lib/ai";
+import type { FollowUpSegment, PaceReport } from "@/lib/ai";
+import { PHASE_BUDGET_MS } from "@/lib/phase-config";
 import { getRoundThresholds } from "@/lib/round-config";
-import { CONTEXT_VERBATIM_TURNS } from "@/lib/context-builder";
 import {
   questionToEditorInitialValue,
   questionToProblemStatement,
@@ -102,21 +106,6 @@ function formatTranscriptLog(entries: TranscriptEntry[]): string {
       (e) => `[${new Date(e.timestamp).toISOString()}] ${e.text}`
     )
     .join("\n");
-}
-
-function formatTestsSummary(
-  allPassed: boolean | null,
-  results: TestResult[] | null
-): string {
-  if (results == null || results.length === 0) {
-    return "The candidate did not run automated tests in the app (no results recorded).";
-  }
-  const n = results.length;
-  const passed = results.filter((r) => r.passed).length;
-  if (allPassed === true) {
-    return `Automated tests: all ${n} case(s) passed.`;
-  }
-  return `Automated tests: ${passed}/${n} passed (some failed or errored).`;
 }
 
 type SessionBoot = "pending" | "ready";
@@ -174,6 +163,7 @@ export function InterviewWorkspace({ question }: Props) {
   const [testRunError, setTestRunError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
   const [testAllPassed, setTestAllPassed] = useState<boolean | null>(null);
+  const lastTestResultRef = useRef<TestRunSummary | null>(null);
   const pendingHiddenNudgeRef = useRef<string | null>(null);
   const [runMode, setRunMode] = usePersistedState<"standard" | "limited" | "dry-run">(
     "ai-interviewer:runMode",
@@ -192,7 +182,6 @@ export function InterviewWorkspace({ question }: Props) {
   const openingGenRef = useRef(0);
   const followUpGenRef = useRef(0);
   const followUpAssistantTurnsRef = useRef(0);
-  const followUpAutoCloseScheduledRef = useRef(false);
   const followUpSealedRef = useRef(false);
   const [followUpSealed, setFollowUpSealed] = useState(false);
   const [followUpSegment, setFollowUpSegment] =
@@ -228,7 +217,10 @@ export function InterviewWorkspace({ question }: Props) {
   const handleRunTestsRef = useRef(() => {});
   const handleImDoneRef = useRef(() => {});
   const rollingContextRef = useRef<string | null>(null);
-  const summaryingRef = useRef(false);
+  // Set before each agent stream begins so the shared onData handler
+  // (handleAgentDataEvent) can append error events to the currently-streaming
+  // assistant bubble across all migrated call sites.
+  const currentAgentAssistantIdRef = useRef<string | null>(null);
   const [padRealism, setPadRealism] = usePersistedState<boolean>(
     "ai-interviewer:padRealism",
     false,
@@ -495,6 +487,7 @@ export function InterviewWorkspace({ question }: Props) {
 
   useEffect(() => {
     setTranscript([]);
+    lastTestResultRef.current = null;
     setTestResults(null);
     setTestAllPassed(null);
     setTestRunError(null);
@@ -550,6 +543,23 @@ export function InterviewWorkspace({ question }: Props) {
       stopSnapshots();
       groqAmbientRef.current?.stop();
       queueMicrotask(() => runFinalFeedbackRef.current());
+    }
+
+    // Backstop: if the round has ended + a grace period and we are still in
+    // followUp (agent failed to call generate_final_feedback), force feedback.
+    const FEEDBACK_BACKSTOP_GRACE_MS = 60_000; // 60s after round end
+    if (
+      roundTimedOutRef.current &&
+      sessionPhaseRef.current === "followUp" &&
+      !isStreamingRef.current
+    ) {
+      const overMs =
+        roundStartTime !== null
+          ? roundNowTick - (roundStartTime + ROUND_DURATION_MS)
+          : 0;
+      if (overMs >= FEEDBACK_BACKSTOP_GRACE_MS) {
+        queueMicrotask(() => runFinalFeedbackRef.current());
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roundNowTick, roundStartTime]);
@@ -611,13 +621,19 @@ export function InterviewWorkspace({ question }: Props) {
     phaseBudgetNudgedRef.current = {};
 
     async function runOpening() {
+      currentAgentAssistantIdRef.current = assistantId;
       try {
-        for await (const chunk of streamAiApi({
-          kind: "opening",
-          modelPresetId: utilityModelPresetIdRef.current,
-          candidateDescription: question.candidateDescription,
-          interviewerContext: question.interviewerContext,
-        }, streamAbortRef.current?.signal)) {
+        for await (const chunk of streamInterviewerApi(
+          {
+            sessionState: buildCurrentSessionState(),
+            messages: [],
+            rollingSummary: "",
+            transcript: transcriptRef.current,
+            turnCount: 0,
+          },
+          handleAgentDataEvent,
+          streamAbortRef.current?.signal
+        )) {
           if (myGen !== openingGenRef.current) {
             return;
           }
@@ -632,18 +648,7 @@ export function InterviewWorkspace({ question }: Props) {
           return;
         }
         const errText = e instanceof Error ? e.message : String(e);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId
-              ? {
-                  ...m,
-                  content: m.content
-                    ? `${m.content}\n\n[Error: ${errText}]`
-                    : `[Error: ${errText}]`,
-                }
-              : m
-          )
-        );
+        appendErrorToMessage(assistantId, errText);
       } finally {
         if (myGen === openingGenRef.current) {
           setIsStreaming(false);
@@ -656,6 +661,7 @@ export function InterviewWorkspace({ question }: Props) {
     return () => {
       openingGenRef.current++;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     sessionBoot,
     question.id,
@@ -687,6 +693,303 @@ export function InterviewWorkspace({ question }: Props) {
   const showEditorTools =
     sessionPhase === "coding" || sessionPhase === "followUp";
 
+  function appendErrorToMessage(id: string, errText: string): void {
+    const errorTail = `[Error: ${errText}]`;
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === id && !m.content.includes(errorTail)
+          ? {
+              ...m,
+              content: m.content ? `${m.content}\n\n${errorTail}` : errorTail,
+            }
+          : m
+      )
+    );
+  }
+
+  function filterBlankAssistantMessages(messagesForApi: ChatMessage[]): ChatMessage[] {
+    return messagesForApi.filter(
+      (m) => !(m.role === "assistant" && m.content.trim() === "")
+    );
+  }
+
+  function buildTestRunSummary(result: RunCodeResult): TestRunSummary {
+    return {
+      visiblePassed: result.passed,
+      hiddenPassed: result.hiddenPassed,
+      passedCount:
+        result.results.filter((r) => r.passed).length +
+        result.hiddenResults.filter((r) => r.passed).length,
+      failedCount:
+        result.results.filter((r) => !r.passed).length +
+        result.hiddenResults.filter((r) => !r.passed).length,
+      hiddenFailedCount: result.hiddenResults.filter((r) => !r.passed).length,
+      cases: [
+        ...result.results.map((r) => ({ ...r, hidden: false })),
+        ...result.hiddenResults.map((r) => ({ ...r, hidden: true })),
+      ],
+    };
+  }
+
+  function buildCurrentSessionState(): SessionState {
+    const phase = sessionPhaseRef.current;
+    return {
+      phase,
+      editorLocked: phase === "clarifying" || phase === "planning",
+      roundEndsAt:
+        roundStartTimeRef.current !== null
+          ? roundStartTimeRef.current + ROUND_DURATION_MS
+          : null,
+      followUpTurnsUsed: followUpsReachedCountRef.current,
+      testRunsUsed: runCountRef.current,
+      lastTestResult: lastTestResultRef.current,
+      currentCode: codeRef.current,
+      snapshots: getSnapshots(),
+      topicsProbed: topicsProbedRef.current,
+      transcript: transcriptRef.current,
+      forcedWrap: forcedWrapRef.current,
+      followUpSegment: followUpSegmentRef.current,
+      question: {
+        id: question.id,
+        title: question.title,
+        difficulty: question.difficulty,
+        candidateDescription: question.candidateDescription,
+        testCases: question.testCases,
+        entryFunction: question.entryFunction,
+        followUps: question.followUps,
+      },
+    };
+  }
+
+  function handleAgentDataEvent(event: InterviewerDataEvent): void {
+    if (event.type === "summary") {
+      if (event.value.trim().length >= 30) {
+        rollingContextRef.current = event.value;
+      }
+      return;
+    }
+    if (event.type === "error") {
+      const targetId = currentAgentAssistantIdRef.current;
+      if (targetId === null) {
+        return;
+      }
+      const errText = event.message;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === targetId
+            ? {
+                ...m,
+                content: m.content
+                  ? `${m.content}\n\n[Error: ${errText}]`
+                  : `[Error: ${errText}]`,
+              }
+            : m
+        )
+      );
+      return;
+    }
+    if (
+      event.type === "tool_result" &&
+      event.tool === "mark_topic_probed"
+    ) {
+      const result = event.result;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("topicsProbed" in result) ||
+        !Array.isArray((result as { topicsProbed: unknown }).topicsProbed)
+      ) {
+        return;
+      }
+      const next = (result as { topicsProbed: unknown[] }).topicsProbed.filter(
+        (topic): topic is string => typeof topic === "string"
+      );
+      topicsProbedRef.current = next;
+      setTopicsProbed(next);
+      return;
+    }
+    if (event.type === "tool_result" && event.tool === "run_tests") {
+      const result = event.result;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("rejected" in result) ||
+        typeof (result as { rejected: unknown }).rejected !== "boolean" ||
+        (result as { rejected: boolean }).rejected
+      ) {
+        return;
+      }
+      const r = result as {
+        visiblePassed?: unknown;
+        hiddenPassed?: unknown;
+        passedCount?: unknown;
+        failedCount?: unknown;
+        hiddenFailedCount?: unknown;
+        visibleCases?: unknown;
+      };
+      if (
+        typeof r.visiblePassed !== "boolean" ||
+        typeof r.hiddenPassed !== "boolean" ||
+        typeof r.passedCount !== "number" ||
+        typeof r.failedCount !== "number" ||
+        typeof r.hiddenFailedCount !== "number" ||
+        !Array.isArray(r.visibleCases)
+      ) {
+        return;
+      }
+      const visibleCases = r.visibleCases.filter(
+        (c): c is TestResult =>
+          c !== null &&
+          typeof c === "object" &&
+          "input" in c &&
+          typeof (c as { input: unknown }).input === "string" &&
+          "expected" in c &&
+          typeof (c as { expected: unknown }).expected === "string" &&
+          "actual" in c &&
+          typeof (c as { actual: unknown }).actual === "string" &&
+          "passed" in c &&
+          typeof (c as { passed: unknown }).passed === "boolean"
+      );
+      lastTestResultRef.current = {
+        visiblePassed: r.visiblePassed,
+        hiddenPassed: r.hiddenPassed,
+        passedCount: r.passedCount,
+        failedCount: r.failedCount,
+        hiddenFailedCount: r.hiddenFailedCount,
+        cases: visibleCases.map((c) => ({ ...c, hidden: false })),
+      };
+      const nextRunCount = runCountRef.current + 1;
+      runCountRef.current = nextRunCount;
+      setRunCount(nextRunCount);
+      setTestResults(visibleCases);
+      setTestAllPassed(r.visiblePassed);
+      setTestRunError(null);
+      return;
+    }
+    if (event.type === "tool_result" && event.tool === "set_phase") {
+      const result = event.result;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("accepted" in result) ||
+        typeof (result as { accepted: unknown }).accepted !== "boolean"
+      ) {
+        return;
+      }
+      const accepted = (result as { accepted: boolean }).accepted;
+      if (!accepted) {
+        return;
+      }
+      if (
+        !("requestedPhase" in result) ||
+        typeof (result as { requestedPhase: unknown }).requestedPhase !==
+          "string"
+      ) {
+        return;
+      }
+      const requestedPhase = (result as { requestedPhase: string })
+        .requestedPhase;
+      const VALID_NEXT: Partial<Record<SessionPhase, SessionPhase>> = {
+        clarifying: "planning",
+        planning: "coding",
+        coding: "followUp",
+      };
+      const expected = VALID_NEXT[sessionPhaseRef.current];
+      if (expected === undefined || requestedPhase !== expected) {
+        // Late-arriving / duplicate tool result — the phase has already
+        // advanced past where this transition was valid. Ignore.
+        return;
+      }
+      const next = expected;
+      setSessionPhase(next);
+      sessionPhaseRef.current = next;
+      const tNow = Date.now();
+      phaseStartTimeRef.current = tNow;
+      setPhaseStartTime(tNow);
+      if (next === "coding") {
+        setCodingStartedAt(tNow);
+        startSnapshots(
+          () => codeRef.current,
+          () => formatTranscriptLog(transcriptRef.current)
+        );
+      } else if (next === "followUp") {
+        sliceForceWrapUpRef.current = false;
+        setSliceGraceReply(false);
+      }
+      return;
+    }
+    if (
+      event.type === "tool_result" &&
+      event.tool === "start_follow_up_variant"
+    ) {
+      const result = event.result;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("accepted" in result) ||
+        typeof (result as { accepted: unknown }).accepted !== "boolean"
+      ) {
+        return;
+      }
+      const accepted = (result as { accepted: boolean }).accepted;
+      if (!accepted) {
+        return;
+      }
+      const next = followUpsReachedCountRef.current + 1;
+      if (next > FOLLOW_UP_SAFETY_CAP) {
+        if (process.env.NODE_ENV === "development") {
+          console.warn(
+            "[InterviewWorkspace] start_follow_up_variant skipped — cap would be exceeded",
+            {
+              current: followUpsReachedCountRef.current,
+              cap: FOLLOW_UP_SAFETY_CAP,
+            }
+          );
+        }
+        return;
+      }
+      followUpsReachedCountRef.current = next;
+      setFollowUpsReachedCount(next);
+      return;
+    }
+    if (
+      event.type === "tool_result" &&
+      event.tool === "generate_final_feedback"
+    ) {
+      const result = event.result;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("accepted" in result) ||
+        typeof (result as { accepted: unknown }).accepted !== "boolean"
+      ) {
+        return;
+      }
+      const accepted = (result as { accepted: boolean }).accepted;
+      if (!accepted) {
+        return;
+      }
+      if (sessionPhaseRef.current === "feedback") {
+        if (process.env.NODE_ENV === "development") {
+          console.warn(
+            "[InterviewWorkspace] generate_final_feedback skipped — already in feedback phase"
+          );
+        }
+        return;
+      }
+      // runFinalFeedbackStream bumps followUpGenRef/openingGenRef/
+      // escalationNudgeGenRef itself — do not duplicate here.
+      if (
+        "reason" in result &&
+        typeof (result as { reason: unknown }).reason === "string" &&
+        (result as { reason: string }).reason === "time_expired"
+      ) {
+        roundTimedOutRef.current = true;
+      }
+      runFinalFeedbackRef.current();
+    }
+  }
+
   function transitionPlanningToCoding(): void {
     if (sessionPhaseRef.current !== "planning") {
       return;
@@ -708,57 +1011,6 @@ export function InterviewWorkspace({ question }: Props) {
       return;
     }
     transitionPlanningToCoding();
-  }
-
-  async function runFollowUpAutoClose(): Promise<void> {
-    if (sessionPhaseRef.current !== "followUp" || followUpSealedRef.current) {
-      return;
-    }
-    const genAtStart = followUpGenRef.current;
-    const assistantId = crypto.randomUUID();
-    setMessages((prev) => [
-      ...prev,
-      { id: assistantId, role: "assistant", content: "" },
-    ]);
-    setIsStreaming(true);
-    try {
-      for await (const chunk of streamAiApi({
-        kind: "followUpClose",
-        modelPresetId: utilityModelPresetIdRef.current,
-      }, streamAbortRef.current?.signal)) {
-        if (genAtStart !== followUpGenRef.current) {
-          return;
-        }
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, content: m.content + chunk } : m
-          )
-        );
-      }
-    } catch (e) {
-      if (genAtStart !== followUpGenRef.current) {
-        return;
-      }
-      const errText = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: m.content
-                  ? `${m.content}\n\n[Error: ${errText}]`
-                  : `[Error: ${errText}]`,
-              }
-            : m
-        )
-      );
-    } finally {
-      if (genAtStart === followUpGenRef.current) {
-        setIsStreaming(false);
-        followUpSealedRef.current = true;
-        setFollowUpSealed(true);
-      }
-    }
   }
 
   function getRemainingRoundMsNow(): number {
@@ -904,8 +1156,20 @@ export function InterviewWorkspace({ question }: Props) {
           codingEscalationStepRef.current += 1;
           if (wasBanked) {
             const next = followUpsReachedCountRef.current + 1;
-            followUpsReachedCountRef.current = next;
-            setFollowUpsReachedCount(next);
+            if (next > FOLLOW_UP_SAFETY_CAP) {
+              if (process.env.NODE_ENV === "development") {
+                console.warn(
+                  "[InterviewWorkspace] banked-escalation follow-up increment skipped — cap would be exceeded",
+                  {
+                    current: followUpsReachedCountRef.current,
+                    cap: FOLLOW_UP_SAFETY_CAP,
+                  }
+                );
+              }
+            } else {
+              followUpsReachedCountRef.current = next;
+              setFollowUpsReachedCount(next);
+            }
           }
           // Autonomous-only path: nothing else to track beyond the step bump.
           void wasAutonomous;
@@ -929,7 +1193,6 @@ export function InterviewWorkspace({ question }: Props) {
     followUpSegmentRef.current = "final";
     setFollowUpSegment("final");
     followUpAssistantTurnsRef.current = 0;
-    followUpAutoCloseScheduledRef.current = false;
     followUpSealedRef.current = false;
     setFollowUpSealed(false);
     sliceAwaitingCandidateReplyRef.current = false;
@@ -959,12 +1222,19 @@ export function InterviewWorkspace({ question }: Props) {
     setIsStreaming(true);
     pauseBgForAiRef.current = true;
     groqAmbientRef.current?.pauseForFocus();
+    currentAgentAssistantIdRef.current = assistantId;
     try {
-      for await (const chunk of streamAiApi({
-        kind: "forcedWrapOpener",
-        modelPresetId: utilityModelPresetIdRef.current,
-        finalCode: codeRef.current,
-      }, streamAbortRef.current?.signal)) {
+      for await (const chunk of streamInterviewerApi(
+        {
+          sessionState: buildCurrentSessionState(),
+          messages: filterBlankAssistantMessages(messages),
+          rollingSummary: rollingContextRef.current ?? "",
+          transcript: transcriptRef.current,
+          turnCount: Math.floor(filterBlankAssistantMessages(messages).length / 2),
+        },
+        handleAgentDataEvent,
+        streamAbortRef.current?.signal
+      )) {
         if (myGen !== forcedWrapOpenerGenRef.current) {
           return;
         }
@@ -979,18 +1249,7 @@ export function InterviewWorkspace({ question }: Props) {
         return;
       }
       const errText = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: m.content
-                  ? `${m.content}\n\n[Error: ${errText}]`
-                  : `[Error: ${errText}]`,
-              }
-            : m
-        )
-      );
+      appendErrorToMessage(assistantId, errText);
     } finally {
       if (myGen === forcedWrapOpenerGenRef.current) {
         setIsStreaming(false);
@@ -1025,23 +1284,20 @@ export function InterviewWorkspace({ question }: Props) {
     }
 
     const now = Date.now();
-    const roundStart = roundStartTimeRef.current ?? now;
-    const remainingMs = ROUND_DURATION_MS - (now - roundStart);
     const phaseElapsedMs =
       phaseStartTimeRef.current !== null
         ? now - phaseStartTimeRef.current
         : null;
 
-    // One-shot phase-budget nudge: only send phaseElapsedMs when we've first
-    // crossed the budget for this phase, so the AI pushes back once rather
-    // than on every subsequent turn.
+    // One-shot phase-budget nudge: mark the phase as nudged the first time we
+    // cross its budget so future turns don't re-trigger.
     const phaseBudget = PHASE_BUDGET_MS[sessionPhaseRef.current];
-    const shouldNudgePhaseBudget =
+    if (
       phaseBudget !== null &&
       phaseElapsedMs !== null &&
       phaseElapsedMs > phaseBudget &&
-      !phaseBudgetNudgedRef.current[sessionPhaseRef.current];
-    if (shouldNudgePhaseBudget) {
+      !phaseBudgetNudgedRef.current[sessionPhaseRef.current]
+    ) {
       phaseBudgetNudgedRef.current = {
         ...phaseBudgetNudgedRef.current,
         [sessionPhaseRef.current]: true,
@@ -1062,7 +1318,10 @@ export function InterviewWorkspace({ question }: Props) {
     if (sliceWrapUpThisTurn) {
       sliceForceWrapUpRef.current = true;
     }
-    const msgsForApi: ChatMessage[] = [...messages, userMsg];
+    const msgsForApi: ChatMessage[] = filterBlankAssistantMessages([
+      ...messages,
+      userMsg,
+    ]);
 
     setMessages((prev) => [
       ...prev,
@@ -1073,37 +1332,11 @@ export function InterviewWorkspace({ question }: Props) {
 
     const applyHumanLatency = humanLatency;
     let messageStreamOk = false;
-    // Ambient-tail merge: during coding, attach a snippet of recent ambient
-    // narration to the user payload so the AI sees both their typed/spoken
-    // question AND what they were thinking aloud. Window is ~15s; we also gate
-    // on `lastSentAmbientCutoffRef` so the same lines aren't sent twice across
-    // turns.
-    const AMBIENT_WINDOW_MS = 15_000;
-    const AMBIENT_MAX_CHARS = 600;
-    let ambientTailForThisTurn: string | null = null;
     if (phaseNow === "coding") {
-      const cutoff = Math.max(
-        lastSentAmbientCutoffRef.current,
-        now - AMBIENT_WINDOW_MS
-      );
-      const recent = transcriptRef.current
-        .filter((e) => e.timestamp > cutoff)
-        .map((e) => e.text)
-        .join(" ")
-        .trim();
-      if (recent.length > 0) {
-        ambientTailForThisTurn =
-          recent.length > AMBIENT_MAX_CHARS
-            ? recent.slice(recent.length - AMBIENT_MAX_CHARS)
-            : recent;
-      }
       lastSentAmbientCutoffRef.current = now;
     }
     try {
-      const hiddenNudgeForThisTurn = pendingHiddenNudgeRef.current;
       pendingHiddenNudgeRef.current = null;
-      const ladderExhausted =
-        currentFollowUpIndexRef.current >= (question.followUps?.length ?? 0);
       // Phase-advance signal detection: AI may prefix its reply with [->planning]
       // or [->coding] (on its own line) to trigger a seamless phase transition.
       // We buffer the first bytes, strip the token if present, then stream normally.
@@ -1114,47 +1347,21 @@ export function InterviewWorkspace({ question }: Props) {
       let sigFlushed = false;
       let fullStreamedContent = "";
 
+      currentAgentAssistantIdRef.current = assistantId;
+
       let firstChunk = true;
       let charCount = 0;
-      for await (const chunk of streamAiApi({
-        kind: "message",
-        modelPresetId: modelPresetIdRef.current,
-        messages: msgsForApi,
-        currentCode: codeRef.current,
-        phase: phaseNow,
-        questionDifficulty: question.difficulty,
-        ...(phaseNow === "followUp"
-          ? {
-              followUpTurnContext: {
-                completedAssistantTurns: followUpAssistantTurnsRef.current,
-                ladderExhausted,
-                preAuthoredFollowUpTotal: question.followUps?.length ?? 0,
-                difficulty: question.difficulty,
-                segment: followUpSegmentRef.current,
-                ...(sliceForceWrapUpRef.current
-                  ? { sliceWrapUp: true as const }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(rollingContextRef.current
-          ? { rollingContext: rollingContextRef.current }
-          : {}),
-        remainingMs,
-        ...(shouldNudgePhaseBudget && phaseElapsedMs !== null
-          ? { phaseElapsedMs }
-          : {}),
-        ...(hiddenNudgeForThisTurn ? { hiddenTestNudge: hiddenNudgeForThisTurn } : {}),
-        ...(phaseNow === "coding"
-          ? { codingEscalationStep: codingEscalationStepRef.current }
-          : {}),
-        ...(phaseNow === "followUp" && forcedWrapHintPendingRef.current
-          ? { forcedWrapHint: true }
-          : {}),
-        ...(phaseNow === "coding" && ambientTailForThisTurn
-          ? { ambientTail: ambientTailForThisTurn }
-          : {}),
-      }, streamAbortRef.current?.signal)) {
+      for await (const chunk of streamInterviewerApi(
+        {
+          sessionState: buildCurrentSessionState(),
+          messages: msgsForApi,
+          rollingSummary: rollingContextRef.current ?? "",
+          transcript: transcriptRef.current,
+          turnCount: Math.floor(msgsForApi.length / 2),
+        },
+        handleAgentDataEvent,
+        streamAbortRef.current?.signal
+      )) {
         fullStreamedContent += chunk;
         // Buffer the very start until we can determine if a signal is present.
         let displayChunk = chunk;
@@ -1247,58 +1454,13 @@ export function InterviewWorkspace({ question }: Props) {
       } else if (phaseSignal === "coding" && phaseNow === "planning") {
         transitionPlanningToCoding();
       }
-      // Lazily generate rolling summary when history grows beyond verbatim window
-      const windowSize = CONTEXT_VERBATIM_TURNS * 2;
-      const totalAfter = msgsForApi.length + 1; // +1 for assistant response
-      if (totalAfter > windowSize && !summaryingRef.current) {
-        const msgsToSummarize = msgsForApi.slice(0, -(windowSize - 2));
-        if (msgsToSummarize.length > 0) {
-          summaryingRef.current = true;
-          void (async () => {
-            // Snapshot the previous summary so we never clobber a working one
-            // with a partial/empty result from a failed retry.
-            const previous = rollingContextRef.current;
-            let summary = "";
-            try {
-              for await (const chunk of streamAiApi({
-                kind: "summarize",
-                modelPresetId: utilityModelPresetIdRef.current,
-                messages: msgsToSummarize,
-              }, streamAbortRef.current?.signal)) {
-                summary += chunk;
-              }
-              // Only commit if the model returned something usable.
-              // Sub-30-char outputs are almost certainly junk (truncation, refusal).
-              if (summary.trim().length >= 30) {
-                rollingContextRef.current = summary;
-              } else {
-                rollingContextRef.current = previous;
-              }
-            } catch {
-              // Summarizer is best-effort. Keep the previous summary intact;
-              // the next user turn will retry with the unsummarized window
-              // (sendMessage already sends recent verbatim turns either way).
-              rollingContextRef.current = previous;
-            } finally {
-              summaryingRef.current = false;
-            }
-          })();
-        }
-      }
     } catch (e) {
+      // The agent route surfaces errors via handleAgentDataEvent's "error"
+      // branch, which already appends to the assistant bubble. The helper
+      // dedups so this fallback path safely covers network/abort/JS errors
+      // that bypass the data stream.
       const errText = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: m.content
-                  ? `${m.content}\n\n[Error: ${errText}]`
-                  : `[Error: ${errText}]`,
-              }
-            : m
-        )
-      );
+      appendErrorToMessage(assistantId, errText);
     } finally {
       setIsStreaming(false);
       pauseBgForAiRef.current = false;
@@ -1339,12 +1501,9 @@ export function InterviewWorkspace({ question }: Props) {
               followUpSealedRef.current = true;
               setFollowUpSealed(true);
             }
-          } else if (!followUpAutoCloseScheduledRef.current) {
-            followUpAutoCloseScheduledRef.current = true;
-            queueMicrotask(() => {
-              void runFollowUpAutoClose();
-            });
           }
+          // Non-slice cap/time hit: agent owns close-out via
+          // generate_final_feedback. The app no longer auto-closes.
         }
       }
       if (
@@ -1439,7 +1598,6 @@ export function InterviewWorkspace({ question }: Props) {
     followUpSegmentRef.current = "slice";
     setFollowUpSegment("slice");
     followUpAssistantTurnsRef.current = 0;
-    followUpAutoCloseScheduledRef.current = false;
     followUpSealedRef.current = false;
     setFollowUpSealed(false);
     sliceAwaitingCandidateReplyRef.current = false;
@@ -1453,28 +1611,26 @@ export function InterviewWorkspace({ question }: Props) {
 
     const myGen = ++followUpGenRef.current;
     const assistantId = crypto.randomUUID();
-    const testsSummary = formatTestsSummary(testAllPassed, testResults);
 
     setMessages((prev) => [
       ...prev,
       { id: assistantId, role: "assistant", content: "" },
     ]);
     setIsStreaming(true);
+    currentAgentAssistantIdRef.current = assistantId;
 
     try {
-      for await (const chunk of streamAiApi({
-        kind: "sliceFollowUpOpener",
-        modelPresetId: utilityModelPresetIdRef.current,
-        candidateDescription: question.candidateDescription,
-        interviewerContext: question.interviewerContext,
-        finalCode: codeRef.current,
-        testsSummary,
-        questionDifficulty: question.difficulty,
-        priorChatHistory: messages,
-        ...(rollingContextRef.current
-          ? { rollingContext: rollingContextRef.current }
-          : {}),
-      }, streamAbortRef.current?.signal)) {
+      for await (const chunk of streamInterviewerApi(
+        {
+          sessionState: buildCurrentSessionState(),
+          messages: filterBlankAssistantMessages(messages),
+          rollingSummary: rollingContextRef.current ?? "",
+          transcript: transcriptRef.current,
+          turnCount: Math.floor(filterBlankAssistantMessages(messages).length / 2),
+        },
+        handleAgentDataEvent,
+        streamAbortRef.current?.signal
+      )) {
         if (myGen !== followUpGenRef.current) {
           return;
         }
@@ -1489,18 +1645,7 @@ export function InterviewWorkspace({ question }: Props) {
         return;
       }
       const errText = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: m.content
-                  ? `${m.content}\n\n[Error: ${errText}]`
-                  : `[Error: ${errText}]`,
-              }
-            : m
-        )
-      );
+      appendErrorToMessage(assistantId, errText);
     } finally {
       if (myGen === followUpGenRef.current) {
         setIsStreaming(false);
@@ -1514,7 +1659,6 @@ export function InterviewWorkspace({ question }: Props) {
     followUpSegmentRef.current = "final";
     setFollowUpSegment("final");
     followUpAssistantTurnsRef.current = 0;
-    followUpAutoCloseScheduledRef.current = false;
     followUpSealedRef.current = false;
     setFollowUpSealed(false);
     sliceAwaitingCandidateReplyRef.current = false;
@@ -1528,7 +1672,6 @@ export function InterviewWorkspace({ question }: Props) {
 
     const myGen = ++followUpGenRef.current;
     const assistantId = crypto.randomUUID();
-    const testsSummary = formatTestsSummary(testAllPassed, testResults);
 
     setMessages((prev) => [
       ...prev,
@@ -1539,22 +1682,20 @@ export function InterviewWorkspace({ question }: Props) {
       },
     ]);
     setIsStreaming(true);
+    currentAgentAssistantIdRef.current = assistantId;
 
     try {
-      for await (const chunk of streamAiApi({
-        kind: "followUpOpener",
-        modelPresetId: utilityModelPresetIdRef.current,
-        candidateDescription: question.candidateDescription,
-        interviewerContext: question.interviewerContext,
-        finalCode: codeRef.current,
-        testsSummary,
-        questionDifficulty: question.difficulty,
-        preAuthoredFollowUpTotal: question.followUps?.length ?? 0,
-        priorChatHistory: messages,
-        ...(rollingContextRef.current
-          ? { rollingContext: rollingContextRef.current }
-          : {}),
-      }, streamAbortRef.current?.signal)) {
+      for await (const chunk of streamInterviewerApi(
+        {
+          sessionState: buildCurrentSessionState(),
+          messages: filterBlankAssistantMessages(messages),
+          rollingSummary: rollingContextRef.current ?? "",
+          transcript: transcriptRef.current,
+          turnCount: Math.floor(filterBlankAssistantMessages(messages).length / 2),
+        },
+        handleAgentDataEvent,
+        streamAbortRef.current?.signal
+      )) {
         if (myGen !== followUpGenRef.current) {
           return;
         }
@@ -1569,18 +1710,7 @@ export function InterviewWorkspace({ question }: Props) {
         return;
       }
       const errText = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: m.content
-                  ? `${m.content}\n\n[Error: ${errText}]`
-                  : `[Error: ${errText}]`,
-              }
-            : m
-        )
-      );
+      appendErrorToMessage(assistantId, errText);
     } finally {
       if (myGen === followUpGenRef.current) {
         setIsStreaming(false);
@@ -1600,7 +1730,6 @@ export function InterviewWorkspace({ question }: Props) {
     sliceAwaitingCandidateReplyRef.current = false;
     sliceForceWrapUpRef.current = false;
     setSliceGraceReply(false);
-    followUpAutoCloseScheduledRef.current = false;
     setSessionPhase("coding");
     sessionPhaseRef.current = "coding";
     const tNow = Date.now();
@@ -1778,6 +1907,7 @@ export function InterviewWorkspace({ question }: Props) {
     }
     if (!codeRef.current.trim()) {
       setTestRunError("Add code before running tests.");
+      lastTestResultRef.current = null;
       setTestResults(null);
       setTestAllPassed(null);
       return;
@@ -1817,6 +1947,7 @@ export function InterviewWorkspace({ question }: Props) {
             ? (data as { error: string }).error
             : "Request failed";
         setTestRunError(err);
+        lastTestResultRef.current = null;
         setTestResults(null);
         setTestAllPassed(null);
         return;
@@ -1830,11 +1961,14 @@ export function InterviewWorkspace({ question }: Props) {
         !Array.isArray((data as { results: unknown }).results)
       ) {
         setTestRunError("Invalid response from server");
+        lastTestResultRef.current = null;
         setTestResults(null);
         setTestAllPassed(null);
         return;
       }
-      const { passed, results, hiddenPassed, hiddenResults } = data as RunCodeResult;
+      const runResult = data as RunCodeResult;
+      const { passed, results, hiddenPassed, hiddenResults } = runResult;
+      lastTestResultRef.current = buildTestRunSummary(runResult);
       setTestResults(results);
       setTestAllPassed(passed);
 
@@ -1895,6 +2029,7 @@ export function InterviewWorkspace({ question }: Props) {
       }
     } catch (e) {
       setTestRunError(e instanceof Error ? e.message : String(e));
+      lastTestResultRef.current = null;
       setTestResults(null);
       setTestAllPassed(null);
     } finally {
@@ -1908,7 +2043,6 @@ export function InterviewWorkspace({ question }: Props) {
     }
     followUpGenRef.current += 1;
     followUpAssistantTurnsRef.current = 0;
-    followUpAutoCloseScheduledRef.current = false;
     followUpSealedRef.current = false;
     setFollowUpSealed(false);
     sliceAwaitingCandidateReplyRef.current = false;
@@ -1930,6 +2064,7 @@ export function InterviewWorkspace({ question }: Props) {
     transcriptRef.current = [];
     setLiveCaption("");
     setSpeechError(null);
+    lastTestResultRef.current = null;
     setTestResults(null);
     setTestAllPassed(null);
     setTestRunError(null);
@@ -1942,7 +2077,6 @@ export function InterviewWorkspace({ question }: Props) {
     setPhaseStartTime(null);
     phaseBudgetNudgedRef.current = {};
     rollingContextRef.current = null;
-    summaryingRef.current = false;
     runCountRef.current = 0;
     setRunCount(0);
     pendingHiddenNudgeRef.current = null;
