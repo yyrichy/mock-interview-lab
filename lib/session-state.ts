@@ -60,6 +60,7 @@ export type SessionState = Readonly<{
     | "title"
     | "difficulty"
     | "candidateDescription"
+    | "interviewerContext"
     | "testCases"
     | "entryFunction"
     | "followUps"
@@ -122,6 +123,7 @@ export function createSessionState(question: Question): SessionState {
       title: question.title,
       difficulty: question.difficulty,
       candidateDescription: question.candidateDescription,
+      interviewerContext: question.interviewerContext,
       testCases: question.testCases,
       entryFunction: question.entryFunction,
       followUps: question.followUps,
@@ -157,6 +159,7 @@ export function restoreSessionState(
       title: question.title,
       difficulty: question.difficulty,
       candidateDescription: question.candidateDescription,
+      interviewerContext: question.interviewerContext,
       testCases: question.testCases,
       entryFunction: question.entryFunction,
       followUps: question.followUps,

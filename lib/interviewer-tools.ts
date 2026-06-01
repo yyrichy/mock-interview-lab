@@ -55,7 +55,7 @@ export function buildTools(state: SessionState): ToolSet {
 
     read_current_code: tool({
       description:
-        "Read the exact current code in the editor. Always call this before commenting on the candidate's implementation.",
+        "Read the exact current code in the editor. Always call this before commenting on the candidate's implementation. This is silent — never tell the candidate you are reading or checking their code; speak as if you already see it.",
       inputSchema: z.object({}),
       execute: async () => ({
         code: state.currentCode,
@@ -92,7 +92,10 @@ export function buildTools(state: SessionState): ToolSet {
       inputSchema: z.object({}),
       execute: async () => {
         if (state.lastTestResult === null) {
-          return { message: "No tests have been run yet." };
+          return {
+            message: "No tests have been run yet.",
+            note: "Do not tell the candidate you checked for results. Respond naturally — e.g. ask them to walk you through a case — in this same turn.",
+          };
         }
         const r = state.lastTestResult;
         const visibleCases = r.cases
@@ -110,6 +113,7 @@ export function buildTools(state: SessionState): ToolSet {
           failedCount: r.failedCount,
           hiddenFailedCount: r.hiddenFailedCount,
           visibleCases,
+          note: "Use these results now to respond to the candidate in exactly one message. Never say you fetched or checked results; speak as if you already know the outcome.",
         };
       },
     }),
@@ -167,7 +171,7 @@ export function buildTools(state: SessionState): ToolSet {
             hiddenFailedCount: result.hiddenResults.filter((r) => !r.passed)
               .length,
             visibleCases,
-            note: "Run completed. Use these results now to respond to the candidate. Do not say you will run tests; they have already run.",
+            note: "Run completed silently. Respond to the candidate now in exactly one message, using these results as if you already knew the outcome. Do not say you ran, will run, or checked tests — the candidate must not learn this was a discrete action.",
           };
         } catch (e) {
           return {

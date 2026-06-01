@@ -3,7 +3,6 @@
 // against Groq's OpenAI-compatible endpoint. Do not delete /api/ai — it still
 // handles `opening` and `feedback` until the Day 2 migration.
 
-import { createOpenAI } from "@ai-sdk/openai";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -12,12 +11,22 @@ import {
 } from "ai";
 import { NextResponse, type NextRequest } from "next/server";
 
+import {
+  DEFAULT_AI_MODEL_PRESET_ID,
+  getAiModelConfig,
+} from "@/lib/ai-models";
 import type { ChatMessage, TranscriptEntry } from "@/lib/chat";
+import { getInterviewerLanguageModel } from "@/lib/interviewer-model";
 import {
   buildContextMessages,
   buildSystemPrompt,
 } from "@/lib/interviewer-prompt";
 import { buildTools } from "@/lib/interviewer-tools";
+import { getQuestionById } from "@/lib/questions";
+import {
+  MissingProviderKeyError,
+  resolveProviderKey,
+} from "@/lib/resolve-provider-key";
 import type { SessionState } from "@/lib/session-state";
 import { summarizeSession } from "@/lib/summarize";
 
@@ -29,6 +38,7 @@ type InterviewerRequestBody = {
   rollingSummary: string;
   transcript: TranscriptEntry[];
   turnCount: number;
+  modelPresetId?: string;
 };
 
 export async function POST(req: NextRequest) {
@@ -37,37 +47,45 @@ export async function POST(req: NextRequest) {
     const { sessionState, messages, rollingSummary, transcript, turnCount } =
       body;
 
-    // Only Groq BYOK keys accepted on this route — non-Groq keys are silently
-    // ignored to prevent credential leak to wrong provider. Per CLAUDE.md the
-    // header itself is never logged or persisted server-side.
+    // Resolve which provider/model to run the agent on from the UI preset.
+    const modelPresetId =
+      typeof body.modelPresetId === "string"
+        ? body.modelPresetId
+        : DEFAULT_AI_MODEL_PRESET_ID;
+    const modelConfig = getAiModelConfig(modelPresetId);
+    if (!modelConfig) {
+      return NextResponse.json(
+        { error: `Invalid model preset "${modelPresetId}"` },
+        { status: 400 }
+      );
+    }
+
+    // BYOK key (per-request header) is preferred over env, but only when its
+    // prefix matches modelConfig.provider — a mismatched key is dropped so we
+    // never forward e.g. an Anthropic key to Groq/OpenAI. Per CLAUDE.md the
+    // header is never logged or persisted server-side.
     const byokKey = req.headers.get("x-provider-key") ?? undefined;
-    const groqKey =
+    let apiKey: string;
+    try {
+      ({ apiKey } = resolveProviderKey(modelConfig.provider, byokKey));
+    } catch (keyError) {
+      if (keyError instanceof MissingProviderKeyError) {
+        return NextResponse.json({ error: keyError.message }, { status: 401 });
+      }
+      throw keyError;
+    }
+
+    const model = getInterviewerLanguageModel(modelConfig, apiKey);
+
+    // Summaries still run on the utility provider (Groq fallback) unless
+    // ANTHROPIC_API_KEY env is set (summarizeSession's primary path). Resolve a
+    // Groq-matched key for that fallback only — the interviewer BYOK key is
+    // forwarded to summarize only when it is itself a Groq key. When the
+    // interviewer runs on a non-Groq provider with no GROQ_API_KEY env and no
+    // Anthropic env, summaries are skipped (failure is swallowed downstream).
+    const summarizeGroqKey =
       (byokKey?.startsWith("gsk_") ? byokKey : undefined) ??
       process.env.GROQ_API_KEY;
-
-    if (
-      process.env.NODE_ENV === "development" &&
-      byokKey &&
-      !byokKey.startsWith("gsk_")
-    ) {
-      console.log(
-        "[interviewer-agent] BYOK key ignored — not a Groq key"
-      );
-    }
-
-    if (!groqKey) {
-      return NextResponse.json(
-        { error: "No Groq API key configured" },
-        { status: 401 }
-      );
-    }
-
-    // Groq exposes an OpenAI-compatible API. Constructed per-request so BYOK
-    // can override the server env key.
-    const groq = createOpenAI({
-      baseURL: "https://api.groq.com/openai/v1",
-      apiKey: groqKey,
-    });
 
     // This turn's context uses the OLD rollingSummary. When a refresh is due,
     // the new summary is emitted on the data-stream channel (see execute
@@ -78,9 +96,20 @@ export async function POST(req: NextRequest) {
     // body transcript is the live value — overrides sessionState.transcript
     // which is the turn-start snapshot. buildTools(state) reads
     // state.transcript internally, so we merge here.
+    // interviewerContext is always taken from the server question bank (never
+    // trust the client payload) so Alex can answer clarifications without
+    // exposing hidden tests in tool returns.
+    const bankQuestion = getQuestionById(sessionState.question.id);
     const stateForTurn: SessionState = {
       ...sessionState,
       transcript: transcript ?? [],
+      question: {
+        ...sessionState.question,
+        interviewerContext:
+          bankQuestion?.interviewerContext ??
+          sessionState.question.interviewerContext ??
+          "",
+      },
     };
 
     const system = buildSystemPrompt(stateForTurn);
@@ -91,6 +120,8 @@ export async function POST(req: NextRequest) {
 
     if (process.env.NODE_ENV === "development") {
       console.log("[interviewer-agent]", {
+        provider: modelConfig.provider,
+        model: modelConfig.model,
         phase: sessionState.phase,
         toolsAvailable: Object.keys(tools),
         messageCount: messages.length,
@@ -119,10 +150,18 @@ export async function POST(req: NextRequest) {
     // they are side-effect channels, not message content.
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        console.log("[interviewer-agent] raw body messages", JSON.stringify(body.messages, null, 2));
-        console.log("[interviewer-agent] raw body sessionState.transcript", JSON.stringify(body.transcript?.slice(-3) ?? [], null, 2));
+        if (process.env.NODE_ENV === "development") {
+          console.log(
+            "[interviewer-agent] raw body messages",
+            JSON.stringify(body.messages, null, 2)
+          );
+          console.log(
+            "[interviewer-agent] raw body sessionState.transcript",
+            JSON.stringify(body.transcript?.slice(-3) ?? [], null, 2)
+          );
+        }
         const result = streamText({
-          model: groq.chat("meta-llama/llama-4-scout-17b-16e-instruct"),
+          model,
           system,
           messages: contextMessages,
           tools: toolsForTurn,
@@ -218,7 +257,7 @@ export async function POST(req: NextRequest) {
             const newSummary = await summarizeSession(
               rollingSummary,
               messages.slice(-5),
-              groqKey
+              summarizeGroqKey
             );
             if (newSummary !== rollingSummary) {
               writer.write({

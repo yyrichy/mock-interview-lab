@@ -97,8 +97,9 @@ export type InterviewerDataEvent =
  * POST /api/interviewer and yield text chunks from the Vercel AI SDK data
  * stream. Non-text events (summary, error) are surfaced via `onData`.
  *
- * Only Groq BYOK keys (prefix `gsk_`) are forwarded — other providers are
- * silently dropped to avoid leaking the wrong credential to the route.
+ * Forwards the BYOK key for the preset's provider via `x-provider-key` (same
+ * pattern as streamAiApi). The server re-validates the key prefix against the
+ * resolved provider, so a mismatched key is dropped server-side too.
  */
 export async function* streamInterviewerApi(
   body: {
@@ -107,6 +108,7 @@ export async function* streamInterviewerApi(
     rollingSummary: string;
     transcript: TranscriptEntry[];
     turnCount: number;
+    modelPresetId: string;
   },
   onData: (event: InterviewerDataEvent) => void,
   signal?: AbortSignal
@@ -115,10 +117,13 @@ export async function* streamInterviewerApi(
     "Content-Type": "application/json",
   };
 
-  const keys = loadProviderKeys();
-  const groqKey = keys.groq;
-  if (groqKey && groqKey.startsWith("gsk_")) {
-    headers["x-provider-key"] = groqKey;
+  const config = getAiModelConfig(body.modelPresetId);
+  if (config) {
+    const keys = loadProviderKeys();
+    const key = keys[config.provider];
+    if (key) {
+      headers["x-provider-key"] = key;
+    }
   }
 
   const res = await fetch("/api/interviewer", {

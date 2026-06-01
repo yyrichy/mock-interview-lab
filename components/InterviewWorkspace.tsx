@@ -153,7 +153,18 @@ export function InterviewWorkspace({ question }: Props) {
   const [sessionPhase, setSessionPhase] =
     useState<SessionPhase>("clarifying");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesRef = useRef<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Id of the assistant bubble for the single in-flight stream. Only this
+  // bubble shows "Alex is thinking" — prevents old empty bubbles from all
+  // appearing live when any stream is active.
+  const [streamingAssistantId, setStreamingAssistantId] = useState<
+    string | null
+  >(null);
+  const streamingAssistantIdRef = useRef<string | null>(null);
+  // Set when tests pass while a stream is still in flight; the slice follow-up
+  // opener is retried once that stream finishes (see isStreaming effect).
+  const pendingSliceFollowUpRef = useRef(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [liveCaption, setLiveCaption] = useState("");
   const [speechError, setSpeechError] = useState<string | null>(null);
@@ -482,6 +493,26 @@ export function InterviewWorkspace({ question }: Props) {
   }, [isStreaming]);
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // Retry the deferred slice follow-up opener once any in-flight stream ends.
+  // handleRunTests sets pendingSliceFollowUpRef when tests pass mid-stream
+  // instead of dropping the transition.
+  useEffect(() => {
+    if (!isStreaming && pendingSliceFollowUpRef.current) {
+      pendingSliceFollowUpRef.current = false;
+      const alreadySlice =
+        sessionPhaseRef.current === "followUp" &&
+        followUpSegmentRef.current === "slice";
+      if (!alreadySlice) {
+        void enterSliceFollowUpPhase();
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
+
+  useEffect(() => {
     transcriptRef.current = transcript;
   }, [transcript]);
 
@@ -610,7 +641,7 @@ export function InterviewWorkspace({ question }: Props) {
     const assistantId = crypto.randomUUID();
 
     setMessages([{ id: assistantId, role: "assistant", content: "" }]);
-    setIsStreaming(true);
+    markStreamStart(assistantId);
 
     // Round + phase timer begin the moment the interviewer starts talking.
     const t0 = Date.now();
@@ -630,8 +661,9 @@ export function InterviewWorkspace({ question }: Props) {
             rollingSummary: "",
             transcript: transcriptRef.current,
             turnCount: 0,
+            modelPresetId: modelPresetIdRef.current,
           },
-          handleAgentDataEvent,
+          (e) => handleAgentDataEvent(e, assistantId),
           streamAbortRef.current?.signal
         )) {
           if (myGen !== openingGenRef.current) {
@@ -652,6 +684,8 @@ export function InterviewWorkspace({ question }: Props) {
       } finally {
         if (myGen === openingGenRef.current) {
           setIsStreaming(false);
+          clearStreamingId(assistantId);
+          finalizeAssistantMessage(assistantId);
         }
       }
     }
@@ -707,6 +741,42 @@ export function InterviewWorkspace({ question }: Props) {
     );
   }
 
+  /** Marks the start of a stream: sets the active bubble + streaming flag. */
+  function markStreamStart(assistantId: string): void {
+    streamingAssistantIdRef.current = assistantId;
+    setStreamingAssistantId(assistantId);
+    setIsStreaming(true);
+  }
+
+  /** Clears the streaming indicator only if this stream is still the active one. */
+  function clearStreamingId(assistantId: string): void {
+    if (streamingAssistantIdRef.current === assistantId) {
+      streamingAssistantIdRef.current = null;
+      setStreamingAssistantId(null);
+    }
+  }
+
+  /**
+   * Called in a stream's finally block: if the assistant bubble is still empty
+   * (no text and no error was appended), give it a visible fallback so the user
+   * never sees a silent blank bubble after a completed stream.
+   */
+  function finalizeAssistantMessage(assistantId: string): void {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === assistantId &&
+        m.role === "assistant" &&
+        m.content.trim() === ""
+          ? {
+              ...m,
+              content:
+                "[Alex didn't send a reply — try again or switch model.]",
+            }
+          : m
+      )
+    );
+  }
+
   function filterBlankAssistantMessages(messagesForApi: ChatMessage[]): ChatMessage[] {
     return messagesForApi.filter(
       (m) => !(m.role === "assistant" && m.content.trim() === "")
@@ -754,6 +824,7 @@ export function InterviewWorkspace({ question }: Props) {
         title: question.title,
         difficulty: question.difficulty,
         candidateDescription: question.candidateDescription,
+        interviewerContext: question.interviewerContext,
         testCases: question.testCases,
         entryFunction: question.entryFunction,
         followUps: question.followUps,
@@ -761,7 +832,10 @@ export function InterviewWorkspace({ question }: Props) {
     };
   }
 
-  function handleAgentDataEvent(event: InterviewerDataEvent): void {
+  function handleAgentDataEvent(
+    event: InterviewerDataEvent,
+    assistantId?: string
+  ): void {
     if (event.type === "summary") {
       if (event.value.trim().length >= 30) {
         rollingContextRef.current = event.value;
@@ -769,8 +843,10 @@ export function InterviewWorkspace({ question }: Props) {
       return;
     }
     if (event.type === "error") {
-      const targetId = currentAgentAssistantIdRef.current;
-      if (targetId === null) {
+      // Route to this stream's own bubble; fall back to the shared ref for any
+      // call site that hasn't bound an id.
+      const targetId = assistantId ?? currentAgentAssistantIdRef.current;
+      if (targetId == null) {
         return;
       }
       const errText = event.message;
@@ -1100,12 +1176,12 @@ export function InterviewWorkspace({ question }: Props) {
 
     const myGen = ++escalationNudgeGenRef.current;
     const assistantId = crypto.randomUUID();
-    const historyForNudge = messages;
+    const historyForNudge = messagesRef.current;
     setMessages((prev) => [
       ...prev,
       { id: assistantId, role: "assistant", content: "" },
     ]);
-    setIsStreaming(true);
+    markStreamStart(assistantId);
     pauseBgForAiRef.current = true;
     groqAmbientRef.current?.pauseForFocus();
     let streamOk = false;
@@ -1151,6 +1227,8 @@ export function InterviewWorkspace({ question }: Props) {
     } finally {
       if (myGen === escalationNudgeGenRef.current) {
         setIsStreaming(false);
+        clearStreamingId(assistantId);
+        finalizeAssistantMessage(assistantId);
         pauseBgForAiRef.current = false;
         if (streamOk) {
           codingEscalationStepRef.current += 1;
@@ -1215,11 +1293,12 @@ export function InterviewWorkspace({ question }: Props) {
     }
     const myGen = ++forcedWrapOpenerGenRef.current;
     const assistantId = crypto.randomUUID();
+    const historyForApi = filterBlankAssistantMessages(messagesRef.current);
     setMessages((prev) => [
       ...prev,
       { id: assistantId, role: "assistant", content: "" },
     ]);
-    setIsStreaming(true);
+    markStreamStart(assistantId);
     pauseBgForAiRef.current = true;
     groqAmbientRef.current?.pauseForFocus();
     currentAgentAssistantIdRef.current = assistantId;
@@ -1227,12 +1306,13 @@ export function InterviewWorkspace({ question }: Props) {
       for await (const chunk of streamInterviewerApi(
         {
           sessionState: buildCurrentSessionState(),
-          messages: filterBlankAssistantMessages(messages),
+          messages: historyForApi,
           rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
-          turnCount: Math.floor(filterBlankAssistantMessages(messages).length / 2),
+          turnCount: Math.floor(historyForApi.length / 2),
+          modelPresetId: modelPresetIdRef.current,
         },
-        handleAgentDataEvent,
+        (e) => handleAgentDataEvent(e, assistantId),
         streamAbortRef.current?.signal
       )) {
         if (myGen !== forcedWrapOpenerGenRef.current) {
@@ -1253,6 +1333,8 @@ export function InterviewWorkspace({ question }: Props) {
     } finally {
       if (myGen === forcedWrapOpenerGenRef.current) {
         setIsStreaming(false);
+        clearStreamingId(assistantId);
+        finalizeAssistantMessage(assistantId);
         pauseBgForAiRef.current = false;
         // From now on, candidate replies during forced-wrap should carry the
         // assess+handoff HINT.
@@ -1328,7 +1410,7 @@ export function InterviewWorkspace({ question }: Props) {
       userMsg,
       { id: assistantId, role: "assistant", content: "" },
     ]);
-    setIsStreaming(true);
+    markStreamStart(assistantId);
 
     const applyHumanLatency = humanLatency;
     let messageStreamOk = false;
@@ -1358,8 +1440,9 @@ export function InterviewWorkspace({ question }: Props) {
           rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
           turnCount: Math.floor(msgsForApi.length / 2),
+          modelPresetId: modelPresetIdRef.current,
         },
-        handleAgentDataEvent,
+        (e) => handleAgentDataEvent(e, assistantId),
         streamAbortRef.current?.signal
       )) {
         fullStreamedContent += chunk;
@@ -1442,6 +1525,21 @@ export function InterviewWorkspace({ question }: Props) {
         phaseSignal = "coding";
       }
 
+      // Human-latency mode skips streaming chunks past 320 chars to feel like
+      // typing; flush the complete (signal-stripped) reply once the stream ends
+      // so long replies are not left truncated/blank in the UI.
+      if (applyHumanLatency && fullStreamedContent.trim()) {
+        const cleanedFull = fullStreamedContent
+          .replace(/\[->planning\]\n?/g, "")
+          .replace(/\[->coding\]\n?/g, "")
+          .trim();
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: cleanedFull } : m
+          )
+        );
+      }
+
       messageStreamOk = true;
 
       // Apply AI-driven phase transition (signal was stripped from the message above).
@@ -1463,6 +1561,8 @@ export function InterviewWorkspace({ question }: Props) {
       appendErrorToMessage(assistantId, errText);
     } finally {
       setIsStreaming(false);
+      clearStreamingId(assistantId);
+      finalizeAssistantMessage(assistantId);
       pauseBgForAiRef.current = false;
       if (
         phaseNow === "followUp" &&
@@ -1611,24 +1711,26 @@ export function InterviewWorkspace({ question }: Props) {
 
     const myGen = ++followUpGenRef.current;
     const assistantId = crypto.randomUUID();
+    const historyForApi = filterBlankAssistantMessages(messagesRef.current);
 
     setMessages((prev) => [
       ...prev,
       { id: assistantId, role: "assistant", content: "" },
     ]);
-    setIsStreaming(true);
+    markStreamStart(assistantId);
     currentAgentAssistantIdRef.current = assistantId;
 
     try {
       for await (const chunk of streamInterviewerApi(
         {
           sessionState: buildCurrentSessionState(),
-          messages: filterBlankAssistantMessages(messages),
+          messages: historyForApi,
           rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
-          turnCount: Math.floor(filterBlankAssistantMessages(messages).length / 2),
+          turnCount: Math.floor(historyForApi.length / 2),
+          modelPresetId: modelPresetIdRef.current,
         },
-        handleAgentDataEvent,
+        (e) => handleAgentDataEvent(e, assistantId),
         streamAbortRef.current?.signal
       )) {
         if (myGen !== followUpGenRef.current) {
@@ -1649,6 +1751,8 @@ export function InterviewWorkspace({ question }: Props) {
     } finally {
       if (myGen === followUpGenRef.current) {
         setIsStreaming(false);
+        clearStreamingId(assistantId);
+        finalizeAssistantMessage(assistantId);
         followUpAssistantTurnsRef.current = 1;
       }
     }
@@ -1672,6 +1776,7 @@ export function InterviewWorkspace({ question }: Props) {
 
     const myGen = ++followUpGenRef.current;
     const assistantId = crypto.randomUUID();
+    const historyForApi = filterBlankAssistantMessages(messagesRef.current);
 
     setMessages((prev) => [
       ...prev,
@@ -1681,19 +1786,20 @@ export function InterviewWorkspace({ question }: Props) {
         content: "",
       },
     ]);
-    setIsStreaming(true);
+    markStreamStart(assistantId);
     currentAgentAssistantIdRef.current = assistantId;
 
     try {
       for await (const chunk of streamInterviewerApi(
         {
           sessionState: buildCurrentSessionState(),
-          messages: filterBlankAssistantMessages(messages),
+          messages: historyForApi,
           rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
-          turnCount: Math.floor(filterBlankAssistantMessages(messages).length / 2),
+          turnCount: Math.floor(historyForApi.length / 2),
+          modelPresetId: modelPresetIdRef.current,
         },
-        handleAgentDataEvent,
+        (e) => handleAgentDataEvent(e, assistantId),
         streamAbortRef.current?.signal
       )) {
         if (myGen !== followUpGenRef.current) {
@@ -1714,6 +1820,8 @@ export function InterviewWorkspace({ question }: Props) {
     } finally {
       if (myGen === followUpGenRef.current) {
         setIsStreaming(false);
+        clearStreamingId(assistantId);
+        finalizeAssistantMessage(assistantId);
         followUpAssistantTurnsRef.current = 1;
       }
     }
@@ -1831,7 +1939,7 @@ export function InterviewWorkspace({ question }: Props) {
     setPhaseStartTime(tNow);
 
     const feedbackId = crypto.randomUUID();
-    const historyForFeedback = [...messages];
+    const historyForFeedback = [...messagesRef.current];
 
     setMessages((prev) => [
       ...prev,
@@ -1841,7 +1949,7 @@ export function InterviewWorkspace({ question }: Props) {
         content: "",
       },
     ]);
-    setIsStreaming(true);
+    markStreamStart(feedbackId);
 
     try {
       for await (const chunk of streamAiApi({
@@ -1878,6 +1986,8 @@ export function InterviewWorkspace({ question }: Props) {
       );
     } finally {
       setIsStreaming(false);
+      clearStreamingId(feedbackId);
+      finalizeAssistantMessage(feedbackId);
       setSessionPersistenceActive(false);
       clearPersistedInterviewSession(question.id);
     }
@@ -2000,9 +2110,16 @@ export function InterviewWorkspace({ question }: Props) {
           setBaselineSolvedAt(now);
         }
 
-        queueMicrotask(() => {
-          void enterSliceFollowUpPhase();
-        });
+        // If a stream is still in flight (e.g. a proactive nudge), defer the
+        // slice opener instead of dropping it — the isStreaming effect retries
+        // it once the stream ends.
+        if (isStreamingRef.current) {
+          pendingSliceFollowUpRef.current = true;
+        } else {
+          queueMicrotask(() => {
+            void enterSliceFollowUpPhase();
+          });
+        }
       }
 
       // If any hidden tests failed, append (do not overwrite) a nudge.
@@ -2083,6 +2200,9 @@ export function InterviewWorkspace({ question }: Props) {
     pendingProactiveEscalationHintRef.current = null;
     pendingProactiveBankedRef.current = false;
     pendingProactiveAutonomousRef.current = false;
+    pendingSliceFollowUpRef.current = false;
+    streamingAssistantIdRef.current = null;
+    setStreamingAssistantId(null);
     escalationNudgeGenRef.current += 1;
     lastSentAmbientCutoffRef.current = 0;
     bruteForceSkippedRef.current = false;
@@ -2361,6 +2481,7 @@ export function InterviewWorkspace({ question }: Props) {
                 void handleMicPointerUp();
               }}
               isStreaming={isStreaming}
+              streamingAssistantId={streamingAssistantId}
               followUpSealed={followUpSealed}
               sliceGraceReply={sliceGraceReply}
               onOpenEditorPlanning={handleOpenEditorPlanning}

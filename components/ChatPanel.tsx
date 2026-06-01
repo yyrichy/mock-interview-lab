@@ -39,6 +39,12 @@ type Props = {
   inputDisabled?: boolean;
   /** True while any AI stream is in progress (scroll follows streaming output). */
   isStreaming?: boolean;
+  /**
+   * Id of the assistant bubble for the single in-flight stream. Only this
+   * bubble shows the "Alex is thinking" indicator, so stale empty bubbles from
+   * earlier turns never appear live.
+   */
+  streamingAssistantId?: string | null;
   /** After capped follow-ups, input is sealed until final feedback. */
   followUpSealed?: boolean;
   /** Slice cap: one more reply allowed after the last interviewer question. */
@@ -83,6 +89,7 @@ export function ChatPanel({
   onContinueToFeedback,
   inputDisabled,
   isStreaming = false,
+  streamingAssistantId = null,
   followUpSealed = false,
   sliceGraceReply = false,
   speechSupported,
@@ -435,7 +442,7 @@ export function ChatPanel({
                 >
                   {m.role === "user" ? (
                     m.content
-                  ) : m.content.length === 0 && isStreaming ? (
+                  ) : m.content.length === 0 && m.id === streamingAssistantId ? (
                     <span
                       className="flex items-center gap-1.5 text-zinc-400"
                       role="status"
