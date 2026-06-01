@@ -51,7 +51,11 @@ export const AI_MODEL_OPTIONS: ReadonlyArray<{
   { id: "openai-gpt-5-mini", label: "OpenAI GPT-5 Mini" },
 ];
 
-export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId = "gemini-2.5-flash";
+// Default interviewer model is Groq Llama 3.3 — intentionally the weakest
+// structured tool-caller we support, so the cockpit (prompt+state driven, no
+// control-flow tools) is stress-tested on it rather than masked by a stronger
+// model. Matches the "default is Groq" claim in AGENTS.md / CLAUDE.md.
+export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId = "groq-llama-3.3-70b";
 
 /** localStorage key for the interview model picker (survives refresh). */
 export const AI_MODEL_PRESET_STORAGE_KEY = "ai-interviewer:modelPresetId";

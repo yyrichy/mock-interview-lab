@@ -1,58 +1,19 @@
-// Hidden test data is server-only. Tool returns aggregate counts for hidden
-// cases — never input, expected, or actual values — per CLAUDE.md.
+// Grounding/execution tools only. Hidden test data is server-only: tool returns
+// aggregate counts for hidden cases — never input, expected, or actual values —
+// per CLAUDE.md. Tools are NOT phase-gated and never mutate conversational flow;
+// the model uses them only to read evidence and run code.
 
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 
-import { FOLLOW_UP_SAFETY_CAP, TEST_RUNS_MAX } from "./interview-limits";
+import { TEST_RUNS_MAX } from "./interview-limits";
 import { runCode } from "./judge0";
 import { getQuestionById } from "./questions";
-import {
-  assertKnownTool,
-  isToolAllowed,
-  type SessionPhase,
-  type SessionState,
-  type ToolName,
-} from "./session-state";
+import type { SessionState } from "./session-state";
 
-/** Build the phase-filtered tool set for one agent turn. */
+/** Build the grounding tool set for one agent turn. Same four tools every turn. */
 export function buildTools(state: SessionState): ToolSet {
-  // Closure-scoped: resets every turn because buildTools is called once per
-  // turn. Prevents the model from looping set_phase calls within a single
-  // multi-step agent run (maxSteps).
-  let setPhaseAcceptedThisTurn = false;
-  const topicsProbedThisTurn = new Set(state.topicsProbed);
-
-  const allTools = {
-    get_session_state: tool({
-      description:
-        "Get the current session state: phase, editor lock state, remaining round time, follow-up turn count and cap, test pass/fail summary, and topics already probed. Field names match the live state block in the system prompt. Call this when unsure what has been covered.",
-      inputSchema: z.object({}),
-      execute: async () => ({
-        phase: state.phase,
-        editorLocked: state.editorLocked,
-        // Computed at call time; drifts a few seconds during generation — expected, not a bug.
-        remainingMs:
-          state.roundEndsAt !== null
-            ? Math.max(0, state.roundEndsAt - Date.now())
-            : null,
-        followUpTurnsUsed: state.followUpTurnsUsed,
-        followUpTurnsMax: FOLLOW_UP_SAFETY_CAP,
-        testRunsUsed: state.testRunsUsed,
-        testRunsMax: TEST_RUNS_MAX,
-        visibleTestsPassed: state.lastTestResult?.visiblePassed ?? null,
-        hiddenTestsPassed: state.lastTestResult?.hiddenPassed ?? null,
-        topicsProbed: state.topicsProbed,
-        lastTestResult: state.lastTestResult
-          ? {
-              passedCount: state.lastTestResult.passedCount,
-              failedCount: state.lastTestResult.failedCount,
-              hiddenFailedCount: state.lastTestResult.hiddenFailedCount,
-            }
-          : null,
-      }),
-    }),
-
+  return {
     read_current_code: tool({
       description:
         "Read the exact current code in the editor. Always call this before commenting on the candidate's implementation. This is silent — never tell the candidate you are reading or checking their code; speak as if you already see it.",
@@ -160,7 +121,7 @@ export function buildTools(state: SessionState): ToolSet {
             passed: r.passed,
           }));
           // App must commit testRunsUsed and lastTestResult on next turn
-          // rebuild — get_session_state will return stale values within this
+          // rebuild — get_test_results will return stale values within this
           // same turn (still reflects turn-start snapshot).
           return {
             rejected: false,
@@ -182,145 +143,5 @@ export function buildTools(state: SessionState): ToolSet {
         }
       },
     }),
-
-    mark_topic_probed: tool({
-      description:
-        "Mark one topic as already probed so you do not ask about it again. Call at most once per reply, only after you have asked about a topic and received a response. The app commits this to SessionState; the returned topicsProbed array is what the agent should treat as current. After calling, stop calling tools and respond naturally.",
-      inputSchema: z.object({
-        topic: z
-          .string()
-          .min(1)
-          .describe(
-            'Short label for the topic — e.g. "begin<=end fix", "empty array edge case", "duplicate handling".'
-          ),
-      }),
-      execute: async ({ topic }) => {
-        topicsProbedThisTurn.add(topic);
-        return {
-          recorded: topic,
-          topicsProbed: Array.from(topicsProbedThisTurn),
-          note: "Topic recorded. Stop calling tools and respond to the candidate now.",
-        };
-      },
-    }),
-
-    set_phase: tool({
-      description:
-        "Request a phase transition. The app validates and commits the move — the agent cannot force an invalid transition. Valid moves: clarifying→planning, planning→coding, coding→followUp. The end-of-interview transition is owned by generate_final_feedback — do not use this tool for that. Call only when the candidate has clearly completed the current phase.",
-      inputSchema: z.object({
-        phase: z
-          .enum(["planning", "coding", "followUp"])
-          .describe("The phase to transition into."),
-        reason: z
-          .string()
-          .min(1)
-          .describe("One sentence explaining why the transition is appropriate now."),
-      }),
-      execute: async ({ phase, reason }) => {
-        if (setPhaseAcceptedThisTurn) {
-          return {
-            accepted: true,
-            requestedPhase: phase,
-            reason,
-            note: "set_phase has already been accepted this turn. Stop calling tools now and respond to the candidate with one short transition sentence (e.g. 'Great — talk me through your approach.'). Do NOT call set_phase again this turn.",
-          };
-        }
-        const VALID_TRANSITIONS: Partial<Record<SessionPhase, SessionPhase>> = {
-          clarifying: "planning",
-          planning: "coding",
-          coding: "followUp",
-        };
-        const expected = VALID_TRANSITIONS[state.phase];
-        if (expected === undefined) {
-          return {
-            accepted: false,
-            reason: `No transition defined from phase "${state.phase}".`,
-            currentPhase: state.phase,
-          };
-        }
-        if (phase !== expected) {
-          return {
-            accepted: false,
-            reason: `Invalid transition: "${state.phase}" → "${phase}". Only "${state.phase}" → "${expected}" is allowed.`,
-            currentPhase: state.phase,
-          };
-        }
-        setPhaseAcceptedThisTurn = true;
-        const responseInstruction =
-          expected === "planning"
-            ? "Now respond to the candidate with one short sentence asking them to talk through their approach."
-            : expected === "coding"
-              ? "Now respond to the candidate with one short sentence telling them to implement their plan. Do not ask another approach question."
-              : "Now respond to the candidate with one short transition sentence into follow-up discussion.";
-        return {
-          accepted: true,
-          requestedPhase: phase,
-          reason,
-          note: `Transition request recorded. The app will commit the phase change before the next turn. ${responseInstruction} STOP calling tools.`,
-        };
-      },
-    }),
-
-    start_follow_up_variant: tool({
-      description:
-        "Signal that you are beginning a new follow-up question variant. Call once per new top-level follow-up topic, BEFORE asking the question. Only call this once when genuinely starting a NEW topic area. Do not call it for follow-on questions within the same topic. Most turns should not call this tool at all. Do NOT call for probing sub-questions inside an existing variant — only for fresh top-level follow-ups. Increments the follow-up turn counter; returns a structured rejection if the cap is reached.",
-      inputSchema: z.object({
-        variantSummary: z
-          .string()
-          .min(1)
-          .describe(
-            "One sentence describing what this follow-up will probe, e.g. 'Asking about time complexity of the optimized solution'."
-          ),
-      }),
-      execute: async ({ variantSummary }) => {
-        // state.followUpTurnsUsed is the turn-start snapshot — within a single
-        // turn the cap can be exceeded by up to maxSteps - 1 if the model
-        // calls this tool repeatedly (worse than run_tests, which is typically
-        // 1-over). Accepted tradeoff vs. plumbing live counter mutation
-        // through tools.
-        if (state.followUpTurnsUsed >= FOLLOW_UP_SAFETY_CAP) {
-          return {
-            accepted: false,
-            reason: "follow_up_cap_reached",
-            followUpTurnsUsed: state.followUpTurnsUsed,
-            followUpTurnsMax: FOLLOW_UP_SAFETY_CAP,
-            message: `Follow-up cap reached (${state.followUpTurnsUsed}/${FOLLOW_UP_SAFETY_CAP}). No further variants available. Wrap up this follow-up phase. Call generate_final_feedback with reason: 'follow_up_complete' to trigger structured feedback.`,
-          };
-        }
-        return {
-          accepted: true,
-          variantSummary,
-          followUpTurnsUsed: state.followUpTurnsUsed + 1,
-          followUpTurnsMax: FOLLOW_UP_SAFETY_CAP,
-          note: "Variant recorded. The app will increment followUpTurnsUsed before the next turn. Now ask exactly one focused follow-up question and stop calling tools.",
-        };
-      },
-    }),
-
-    generate_final_feedback: tool({
-      description:
-        "Signal that the interview is complete and final feedback should be generated. Call this when the follow-up phase is finished or when time has expired. The app handles the feedback stream — do NOT attempt to write structured feedback inline. After calling, say a brief natural closing line to the candidate, then stop.",
-      inputSchema: z.object({
-        reason: z
-          .enum(["follow_up_complete", "time_expired", "candidate_requested"])
-          .describe("Why feedback is being triggered now."),
-      }),
-      execute: async ({ reason }) => ({
-        accepted: true,
-        reason,
-        note: "Feedback generation triggered. The app will handle the feedback stream. Say a brief closing line to the candidate (e.g. 'Thanks for working through that with me. Let me put my notes together.') then stop. Do not write feedback content yourself.",
-      }),
-    }),
   };
-
-  // Filter by current phase. assertKnownTool is a defensive runtime check
-  // against typos in the keys above; isToolAllowed is the actual phase gate.
-  const filtered: Record<string, (typeof allTools)[ToolName]> = {};
-  for (const name of Object.keys(allTools) as ToolName[]) {
-    assertKnownTool(name);
-    if (isToolAllowed(name, state.phase)) {
-      filtered[name] = allTools[name];
-    }
-  }
-  return filtered as ToolSet;
 }

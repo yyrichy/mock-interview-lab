@@ -1,5 +1,9 @@
-import type { FollowUpSegment } from "@/lib/ai";
-import type { ChatMessage, SessionPhase, TranscriptEntry } from "@/lib/chat";
+import type {
+  ChatMessage,
+  FollowUpSegment,
+  SessionPhase,
+  TranscriptEntry,
+} from "@/lib/chat";
 import type { TestResult } from "@/lib/judge0";
 import type { Snapshot } from "@/lib/snapshots";
 

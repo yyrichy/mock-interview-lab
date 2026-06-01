@@ -8,8 +8,12 @@ import {
   AI_MODEL_OPTIONS,
   type AiModelPresetId,
 } from "@/lib/ai-models";
-import type { ChatMessage, SessionPhase, TranscriptEntry } from "@/lib/chat";
-import type { FollowUpSegment } from "@/lib/ai";
+import type {
+  ChatMessage,
+  FollowUpSegment,
+  SessionPhase,
+  TranscriptEntry,
+} from "@/lib/chat";
 import { synthesizeWithElevenLabs } from "@/lib/speech";
 
 type Props = {

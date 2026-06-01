@@ -1,7 +1,10 @@
-// New agent route (POST /api/interviewer). Replaces the `message` kind from
-// the legacy /api/ai route. Uses Vercel AI SDK 6 streamText with tool calling
-// against Groq's OpenAI-compatible endpoint. Do not delete /api/ai — it still
-// handles `opening` and `feedback` until the Day 2 migration.
+// The single interviewer brain (POST /api/interviewer). Handles every
+// conversational turn — opening, clarifying, planning, coding guidance,
+// escalations, follow-ups, nudges — from one system prompt plus live state.
+// Built on Vercel AI SDK 6 streamText with grounding-only tool calling.
+// Phase is app metadata (the model signals readiness with inline tokens; the
+// client commits). The written scorecard is a separate grounded generation
+// (POST /api/feedback). Default provider is Groq; any preset works via BYOK.
 
 import {
   createUIMessageStream,
@@ -131,16 +134,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Action tools mutate app-owned state on the client. Their results are
-    // forwarded over the data stream so the client can commit before the next
-    // turn.
-    const ACTION_TOOLS = [
-      "mark_topic_probed",
-      "run_tests",
-      "set_phase",
-      "start_follow_up_variant",
-      "generate_final_feedback",
-    ];
+    // run_tests is the one tool whose result mutates app-owned state on the
+    // client (testRunsUsed, lastTestResult). Its result is forwarded over the
+    // data stream so the client can commit before the next turn. The other
+    // grounding tools are read-only and need no client commit.
+    const ACTION_TOOLS = ["run_tests"];
 
     // Wrap streamText in a UI message stream so the new rolling summary and
     // action-tool results ride the same response. Model output and summary

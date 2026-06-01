@@ -47,13 +47,24 @@ export type SessionState = Readonly<{
   lastTestResult: TestRunSummary | null;
   currentCode: string;
   snapshots: ReadonlyArray<Snapshot>;
-  /** Updated via mark_topic_probed tool only — never mutated directly by the agent. */
+  /**
+   * Best-effort topic memory, shown to the model as context to avoid circular
+   * questions. No longer mutated mid-session (the mark_topic_probed control tool
+   * was removed); it is restored from persistence and reset on a new session.
+   */
   topicsProbed: ReadonlyArray<string>;
   transcript: ReadonlyArray<TranscriptEntry>;
   /** Set during a forced verbal wrap-up transition — agent should ask for walkthrough. */
   forcedWrap?: boolean;
   /** "slice" if in the mid-coding slice segment, "final" if in the post-coding final segment. */
   followUpSegment?: "slice" | "final";
+  /**
+   * Transient per-turn hint (NOT persisted): set only when the app initiates a
+   * proactive coding-escalation turn. Carries the banked/autonomous variant
+   * prompt so the model delivers the escalation from state. Absent on normal
+   * turns; the app owns the trigger condition and variant selection.
+   */
+  codingEscalationHint?: string;
   question: Pick<
     Question,
     | "id"
@@ -67,42 +78,15 @@ export type SessionState = Readonly<{
   >;
 }>;
 
+// Grounding/execution tools only. There are no control-flow tools: phase is
+// app metadata (advanced by InterviewWorkspace from inline tokens / UI / timers,
+// never by the model), and follow-up/feedback are app-driven. Tools are NOT
+// phase-gated — the model may read evidence or run tests in any phase.
 export type ToolName =
-  | "get_session_state"
   | "read_current_code"
   | "read_recent_transcript"
   | "get_test_results"
-  | "run_tests"
-  | "mark_topic_probed"
-  | "set_phase"
-  | "start_follow_up_variant"
-  | "generate_final_feedback";
-
-export const TOOL_PERMISSIONS: Readonly<
-  Record<ToolName, ReadonlyArray<SessionPhase>>
-> = {
-  get_session_state: ["clarifying", "planning", "coding", "followUp", "feedback"],
-  read_current_code: ["clarifying", "planning", "coding", "followUp", "feedback"],
-  read_recent_transcript: ["coding", "followUp", "feedback"],
-  get_test_results: ["coding", "followUp", "feedback"],
-  run_tests: ["coding", "followUp"],
-  mark_topic_probed: ["clarifying", "planning", "coding", "followUp"],
-  set_phase: ["clarifying", "planning", "coding", "followUp"],
-  start_follow_up_variant: ["followUp"],
-  generate_final_feedback: ["followUp"],
-};
-
-// LLM tool-call payloads arrive as raw strings. Use assertKnownTool at the
-// boundary to throw on unknown names, then isToolAllowed for the phase check.
-export function assertKnownTool(tool: string): asserts tool is ToolName {
-  if (!(tool in TOOL_PERMISSIONS)) {
-    throw new Error(`Unknown tool: "${tool}"`);
-  }
-}
-
-export function isToolAllowed(tool: ToolName, phase: SessionPhase): boolean {
-  return TOOL_PERMISSIONS[tool].includes(phase);
-}
+  | "run_tests";
 
 export function createSessionState(question: Question): SessionState {
   return {

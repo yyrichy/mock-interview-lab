@@ -6,13 +6,15 @@ import type { ChatMessage, TranscriptEntry } from "@/lib/chat";
 import type { SessionState } from "@/lib/session-state";
 
 /**
- * POST /api/ai and yield decoded UTF-8 chunks from the plain-text response body.
- * Automatically adds x-provider-key if the user has a local BYOK key for the active provider.
+ * POST /api/feedback and yield decoded UTF-8 chunks from the plain-text response
+ * body. Automatically adds x-provider-key if the user has a local BYOK key for
+ * the active provider. This is the only plain-text streaming client left — the
+ * end-of-session scorecard. Every conversational turn uses streamInterviewerApi.
  *
  * Pass `signal` to cancel an in-flight stream (e.g. on unmount/navigation).
  * Aborting throws a `DOMException` named "AbortError" from the generator.
  */
-export async function* streamAiApi(
+export async function* streamFeedbackApi(
   body: Record<string, unknown>,
   signal?: AbortSignal
 ): AsyncGenerator<string> {
@@ -32,7 +34,7 @@ export async function* streamAiApi(
     }
   }
 
-  const res = await fetch("/api/ai", {
+  const res = await fetch("/api/feedback", {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -98,7 +100,7 @@ export type InterviewerDataEvent =
  * stream. Non-text events (summary, error) are surfaced via `onData`.
  *
  * Forwards the BYOK key for the preset's provider via `x-provider-key` (same
- * pattern as streamAiApi). The server re-validates the key prefix against the
+ * pattern as streamFeedbackApi). The server re-validates the key prefix against the
  * resolved provider, so a mismatched key is dropped server-side too.
  */
 export async function* streamInterviewerApi(

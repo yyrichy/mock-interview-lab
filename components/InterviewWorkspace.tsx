@@ -13,7 +13,7 @@ import { ChatToggleButton } from "@/components/ChatToggleButton";
 import { Editor } from "@/components/Editor";
 import { ResizableTestResultsSection } from "@/components/ResizableTestResultsSection";
 import {
-  streamAiApi,
+  streamFeedbackApi,
   streamInterviewerApi,
   type InterviewerDataEvent,
 } from "@/lib/ai-client";
@@ -54,7 +54,8 @@ import {
   FOLLOW_UP_SLICE_SAFETY_CAP,
 } from "@/lib/follow-up-config";
 import { FOLLOW_UP_SAFETY_CAP, ROUND_DURATION_MS } from "@/lib/interview-limits";
-import type { FollowUpSegment, PaceReport } from "@/lib/ai";
+import type { FollowUpSegment } from "@/lib/chat";
+import type { PaceReport } from "@/lib/feedback";
 import { PHASE_BUDGET_MS } from "@/lib/phase-config";
 import { getRoundThresholds } from "@/lib/round-config";
 import {
@@ -214,7 +215,6 @@ export function InterviewWorkspace({ question }: Props) {
       DEFAULT_UTILITY_MODEL_PRESET_ID,
       (raw) => (isAiModelPresetId(raw) ? raw : null)
     );
-  const utilityModelPresetIdRef = useRef(utilityModelPresetId);
   const sessionPhaseRef = useRef<SessionPhase>(sessionPhase);
   const isStreamingRef = useRef(isStreaming);
   const focusedMicRef = useRef(false);
@@ -469,10 +469,6 @@ export function InterviewWorkspace({ question }: Props) {
   }, [modelPresetId]);
 
   useEffect(() => {
-    utilityModelPresetIdRef.current = utilityModelPresetId;
-  }, [utilityModelPresetId]);
-
-  useEffect(() => {
     runCountRef.current = runCount;
   }, [runCount]);
 
@@ -577,7 +573,8 @@ export function InterviewWorkspace({ question }: Props) {
     }
 
     // Backstop: if the round has ended + a grace period and we are still in
-    // followUp (agent failed to call generate_final_feedback), force feedback.
+    // followUp, force feedback. Feedback is app-driven (Continue button or this
+    // round-clock backstop); the model never triggers it.
     const FEEDBACK_BACKSTOP_GRACE_MS = 60_000; // 60s after round end
     if (
       roundTimedOutRef.current &&
@@ -864,26 +861,6 @@ export function InterviewWorkspace({ question }: Props) {
       );
       return;
     }
-    if (
-      event.type === "tool_result" &&
-      event.tool === "mark_topic_probed"
-    ) {
-      const result = event.result;
-      if (
-        !result ||
-        typeof result !== "object" ||
-        !("topicsProbed" in result) ||
-        !Array.isArray((result as { topicsProbed: unknown }).topicsProbed)
-      ) {
-        return;
-      }
-      const next = (result as { topicsProbed: unknown[] }).topicsProbed.filter(
-        (topic): topic is string => typeof topic === "string"
-      );
-      topicsProbedRef.current = next;
-      setTopicsProbed(next);
-      return;
-    }
     if (event.type === "tool_result" && event.tool === "run_tests") {
       const result = event.result;
       if (
@@ -941,128 +918,6 @@ export function InterviewWorkspace({ question }: Props) {
       setTestAllPassed(r.visiblePassed);
       setTestRunError(null);
       return;
-    }
-    if (event.type === "tool_result" && event.tool === "set_phase") {
-      const result = event.result;
-      if (
-        !result ||
-        typeof result !== "object" ||
-        !("accepted" in result) ||
-        typeof (result as { accepted: unknown }).accepted !== "boolean"
-      ) {
-        return;
-      }
-      const accepted = (result as { accepted: boolean }).accepted;
-      if (!accepted) {
-        return;
-      }
-      if (
-        !("requestedPhase" in result) ||
-        typeof (result as { requestedPhase: unknown }).requestedPhase !==
-          "string"
-      ) {
-        return;
-      }
-      const requestedPhase = (result as { requestedPhase: string })
-        .requestedPhase;
-      const VALID_NEXT: Partial<Record<SessionPhase, SessionPhase>> = {
-        clarifying: "planning",
-        planning: "coding",
-        coding: "followUp",
-      };
-      const expected = VALID_NEXT[sessionPhaseRef.current];
-      if (expected === undefined || requestedPhase !== expected) {
-        // Late-arriving / duplicate tool result — the phase has already
-        // advanced past where this transition was valid. Ignore.
-        return;
-      }
-      const next = expected;
-      setSessionPhase(next);
-      sessionPhaseRef.current = next;
-      const tNow = Date.now();
-      phaseStartTimeRef.current = tNow;
-      setPhaseStartTime(tNow);
-      if (next === "coding") {
-        setCodingStartedAt(tNow);
-        startSnapshots(
-          () => codeRef.current,
-          () => formatTranscriptLog(transcriptRef.current)
-        );
-      } else if (next === "followUp") {
-        sliceForceWrapUpRef.current = false;
-        setSliceGraceReply(false);
-      }
-      return;
-    }
-    if (
-      event.type === "tool_result" &&
-      event.tool === "start_follow_up_variant"
-    ) {
-      const result = event.result;
-      if (
-        !result ||
-        typeof result !== "object" ||
-        !("accepted" in result) ||
-        typeof (result as { accepted: unknown }).accepted !== "boolean"
-      ) {
-        return;
-      }
-      const accepted = (result as { accepted: boolean }).accepted;
-      if (!accepted) {
-        return;
-      }
-      const next = followUpsReachedCountRef.current + 1;
-      if (next > FOLLOW_UP_SAFETY_CAP) {
-        if (process.env.NODE_ENV === "development") {
-          console.warn(
-            "[InterviewWorkspace] start_follow_up_variant skipped — cap would be exceeded",
-            {
-              current: followUpsReachedCountRef.current,
-              cap: FOLLOW_UP_SAFETY_CAP,
-            }
-          );
-        }
-        return;
-      }
-      followUpsReachedCountRef.current = next;
-      setFollowUpsReachedCount(next);
-      return;
-    }
-    if (
-      event.type === "tool_result" &&
-      event.tool === "generate_final_feedback"
-    ) {
-      const result = event.result;
-      if (
-        !result ||
-        typeof result !== "object" ||
-        !("accepted" in result) ||
-        typeof (result as { accepted: unknown }).accepted !== "boolean"
-      ) {
-        return;
-      }
-      const accepted = (result as { accepted: boolean }).accepted;
-      if (!accepted) {
-        return;
-      }
-      if (sessionPhaseRef.current === "feedback") {
-        if (process.env.NODE_ENV === "development") {
-          console.warn(
-            "[InterviewWorkspace] generate_final_feedback skipped — already in feedback phase"
-          );
-        }
-        return;
-      }
-      // runFinalFeedbackStream bumps followUpGenRef/openingGenRef/
-      // escalationNudgeGenRef itself — do not duplicate here.
-      if (
-        "reason" in result &&
-        typeof (result as { reason: unknown }).reason === "string" &&
-        (result as { reason: string }).reason === "time_expired"
-      ) {
-        roundTimedOutRef.current = true;
-      }
-      runFinalFeedbackRef.current();
     }
   }
 
@@ -1186,17 +1041,28 @@ export function InterviewWorkspace({ question }: Props) {
     groqAmbientRef.current?.pauseForFocus();
     let streamOk = false;
     try {
-      for await (const chunk of streamAiApi({
-        kind: "codingEscalationNudge",
-        modelPresetId: utilityModelPresetIdRef.current,
-        priorChatHistory: historyForNudge,
-        currentCode: codeRef.current,
-        hint,
-        codingEscalationStep: codingEscalationStepRef.current,
-        ...(rollingContextRef.current
-          ? { rollingContext: rollingContextRef.current }
-          : {}),
-      }, streamAbortRef.current?.signal)) {
+      // Folded into the single interviewer brain: instead of a separate scripted
+      // /api/ai nudge, the app feeds the escalation trigger + selected variant as
+      // an explicit hint in this turn's state, and the model speaks it from the
+      // harvested coding-phase craft. App owns the trigger + variant selection;
+      // the model only produces the wording.
+      const msgsForNudge = filterBlankAssistantMessages(historyForNudge);
+      const escalationState: SessionState = {
+        ...buildCurrentSessionState(),
+        codingEscalationHint: hint,
+      };
+      for await (const chunk of streamInterviewerApi(
+        {
+          sessionState: escalationState,
+          messages: msgsForNudge,
+          rollingSummary: rollingContextRef.current ?? "",
+          transcript: transcriptRef.current,
+          turnCount: Math.floor(msgsForNudge.length / 2),
+          modelPresetId: modelPresetIdRef.current,
+        },
+        (e) => handleAgentDataEvent(e, assistantId),
+        streamAbortRef.current?.signal
+      )) {
         if (myGen !== escalationNudgeGenRef.current) {
           return;
         }
@@ -1602,8 +1468,9 @@ export function InterviewWorkspace({ question }: Props) {
               setFollowUpSealed(true);
             }
           }
-          // Non-slice cap/time hit: agent owns close-out via
-          // generate_final_feedback. The app no longer auto-closes.
+          // Non-slice cap/time hit: the model gives a verbal close from the
+          // followUp prompt; feedback itself is app-driven (Continue / round
+          // backstop), so the app does not auto-close here.
         }
       }
       if (
@@ -1952,8 +1819,7 @@ export function InterviewWorkspace({ question }: Props) {
     markStreamStart(feedbackId);
 
     try {
-      for await (const chunk of streamAiApi({
-        kind: "feedback",
+      for await (const chunk of streamFeedbackApi({
         modelPresetId: modelPresetIdRef.current,
         question: problemStatement,
         fullTranscript: formatTranscriptLog(transcriptRef.current),
