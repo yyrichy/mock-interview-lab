@@ -4,7 +4,8 @@
 // Built on Vercel AI SDK 6 streamText with grounding-only tool calling.
 // Phase is app metadata (the model signals readiness with inline tokens; the
 // client commits). The written scorecard is a separate grounded generation
-// (POST /api/feedback). Default provider is Groq; any preset works via BYOK.
+// (POST /api/feedback). Default model is OpenAI GPT-5.4 Mini (the hosted demo
+// runs on the builder's own key); any preset works via BYOK.
 
 import {
   createUIMessageStream,
@@ -19,6 +20,7 @@ import {
   getAiModelConfig,
 } from "@/lib/ai-models";
 import type { ChatMessage, TranscriptEntry } from "@/lib/chat";
+import { INTERVIEWER_MAX_OUTPUT_TOKENS } from "@/lib/interview-limits";
 import { getInterviewerLanguageModel } from "@/lib/interviewer-model";
 import {
   buildContextMessages,
@@ -158,12 +160,37 @@ export async function POST(req: NextRequest) {
             JSON.stringify(body.transcript?.slice(-3) ?? [], null, 2)
           );
         }
+        // Groq can loop on malformed/failed tool calls and end a turn with zero
+        // text. Track consecutive failures (repair-dropped calls + rejected tool
+        // results); after a small cap, take tools away for the rest of the turn
+        // and force a plain-text reply so the turn never ends blank. This sits on
+        // top of experimental_repairToolCall, which still drops-and-continues.
+        let consecutiveToolFailures = 0;
+        let toolsDisabledForTurn = false;
+        const TOOL_FAILURE_CAP = 2;
+
         const result = streamText({
           model,
+          // Cap the interviewer turn — turns are short by design, so this guards
+          // against a runaway generation inflating cost on the demo's metered
+          // key. Feedback is uncapped (separate path, POST /api/feedback).
+          maxOutputTokens: INTERVIEWER_MAX_OUTPUT_TOKENS,
           system,
           messages: contextMessages,
           tools: toolsForTurn,
           stopWhen: stepCountIs(5),
+          // Once Groq has looped on failed tool calls, disable tools for the rest
+          // of this turn and make it answer in plain text. Worst case Alex replies
+          // without having read the latest code (degraded) instead of going silent.
+          prepareStep: () => {
+            if (toolsDisabledForTurn) {
+              return {
+                toolChoice: "none" as const,
+                system: `${system}\n\n[You have been unable to use your tools this turn. Reply to the candidate now in plain text — do NOT call any tools.]`,
+              };
+            }
+            return {};
+          },
           // summarizeSession below does not receive this signal — it will run
           // to its 30s timeout on disconnect. Fix requires adding
           // signal?: AbortSignal to summarize.ts — tracked for post-Day-2.
@@ -212,11 +239,18 @@ export async function POST(req: NextRequest) {
             });
           },
           experimental_repairToolCall: async ({ toolCall, error }) => {
+            // A dropped (malformed) call is a failure — count it toward the cap.
+            consecutiveToolFailures += 1;
+            if (consecutiveToolFailures >= TOOL_FAILURE_CAP) {
+              toolsDisabledForTurn = true;
+            }
             if (process.env.NODE_ENV === "development") {
               console.warn("[interviewer-agent] tool call rejected — dropping", {
                 tool: toolCall.toolName,
                 toolCall,
                 error: error instanceof Error ? error.message : String(error),
+                consecutiveToolFailures,
+                toolsDisabledForTurn,
               });
             }
             return null;
@@ -244,6 +278,29 @@ export async function POST(req: NextRequest) {
                   data: { tool: tr.toolName, result: tr.output },
                   transient: true,
                 });
+              }
+            }
+
+            // Failure-streak accounting (drives the prepareStep force-text guard).
+            // Progress — text produced, or a tool that actually succeeded — clears
+            // the streak. A step whose only tool results were rejections counts
+            // toward the cap alongside repair-dropped calls.
+            let stepHadToolSuccess = false;
+            let stepHadToolRejection = false;
+            for (const tr of toolResults ?? []) {
+              const out = tr.output as { rejected?: unknown } | null | undefined;
+              if (out && typeof out === "object" && out.rejected === true) {
+                stepHadToolRejection = true;
+              } else {
+                stepHadToolSuccess = true;
+              }
+            }
+            if ((text && text.trim().length > 0) || stepHadToolSuccess) {
+              consecutiveToolFailures = 0;
+            } else if (stepHadToolRejection) {
+              consecutiveToolFailures += 1;
+              if (consecutiveToolFailures >= TOOL_FAILURE_CAP) {
+                toolsDisabledForTurn = true;
               }
             }
           },

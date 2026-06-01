@@ -11,13 +11,25 @@ import { runCode } from "./judge0";
 import { getQuestionById } from "./questions";
 import type { SessionState } from "./session-state";
 
+// Input schema for the no-argument grounding tools. Groq (llama-3.3-70b) cannot
+// synthesize an argument for a no-arg tool and sends `null` (sometimes the
+// string "null") instead of `{}`. Against a plain z.object({}) that fails
+// validation, so the call is dropped and Groq retries the SAME malformed call
+// until the step limit — a blank, ~20k-token turn. `.catch(() => ({}))` makes
+// any null/empty/invalid input coerce to {} so the call validates and the tool
+// runs. These tools take no real arguments — they read from session state and
+// ignore the input — so coercing anything to {} is exactly right. The emitted
+// JSON schema is still the empty object, so strong callers that send {} are
+// unaffected.
+const noToolInput = z.object({}).catch(() => ({}));
+
 /** Build the grounding tool set for one agent turn. Same four tools every turn. */
 export function buildTools(state: SessionState): ToolSet {
   return {
     read_current_code: tool({
       description:
         "Read the exact current code in the editor. Always call this before commenting on the candidate's implementation. This is silent — never tell the candidate you are reading or checking their code; speak as if you already see it.",
-      inputSchema: z.object({}),
+      inputSchema: noToolInput,
       execute: async () => ({
         code: state.currentCode,
         language: "python",
@@ -50,7 +62,7 @@ export function buildTools(state: SessionState): ToolSet {
     get_test_results: tool({
       description:
         "Get the results of the last Judge0 test run. Visible cases are returned with full input/expected/actual; hidden cases are returned as aggregate counts only — never as inputs or expected outputs. Do not mention this tool by name to the candidate.",
-      inputSchema: z.object({}),
+      inputSchema: noToolInput,
       execute: async () => {
         if (state.lastTestResult === null) {
           return {
@@ -82,7 +94,7 @@ export function buildTools(state: SessionState): ToolSet {
     run_tests: tool({
       description:
         "Execute the candidate's current code via Judge0 against visible and hidden test cases. Returns visible cases in detail; hidden cases as aggregate counts only. Subject to a per-session cap (testRunsMax); returns a structured rejection if the cap is reached.",
-      inputSchema: z.object({}),
+      inputSchema: noToolInput,
       execute: async () => {
         // state.testRunsUsed is from the turn-start snapshot — cap can be
         // exceeded by 1 if run_tests is called twice within the same turn.

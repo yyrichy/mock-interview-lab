@@ -34,6 +34,10 @@ export const AI_MODEL_PRESETS = {
     provider: "openai" as const,
     model: "gpt-5-mini",
   },
+  "openai-gpt-5.4-mini": {
+    provider: "openai" as const,
+    model: "gpt-5.4-mini",
+  },
 } as const satisfies Record<string, AiModelConfig>;
 
 export type AiModelPresetId = keyof typeof AI_MODEL_PRESETS;
@@ -49,13 +53,17 @@ export const AI_MODEL_OPTIONS: ReadonlyArray<{
   { id: "anthropic-claude-haiku-4-5", label: "Claude Haiku 4.5" },
   { id: "openai-gpt-5", label: "OpenAI GPT-5" },
   { id: "openai-gpt-5-mini", label: "OpenAI GPT-5 Mini" },
+  { id: "openai-gpt-5.4-mini", label: "OpenAI GPT-5.4 Mini" },
 ];
 
-// Default interviewer model is Groq Llama 3.3 — intentionally the weakest
-// structured tool-caller we support, so the cockpit (prompt+state driven, no
-// control-flow tools) is stress-tested on it rather than masked by a stronger
-// model. Matches the "default is Groq" claim in AGENTS.md / CLAUDE.md.
-export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId = "groq-llama-3.3-70b";
+// Default interviewer model is OpenAI GPT-5.4 Mini — a strong, reliable
+// structured tool-caller. The hosted demo is deployed with the builder's own
+// OpenAI key, so the interview "just works" for signups: no BYOK friction, no
+// weak-caller failures. Groq, Gemini, and Anthropic presets all remain
+// SELECTABLE for self-hosters who BYOK — they are simply no longer the default.
+// One artifact, two configs (see demo-default-swap.md). Matches the
+// "default is GPT-5.4 Mini" claim in AGENTS.md / CLAUDE.md.
+export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId = "openai-gpt-5.4-mini";
 
 /** localStorage key for the interview model picker (survives refresh). */
 export const AI_MODEL_PRESET_STORAGE_KEY = "ai-interviewer:modelPresetId";
