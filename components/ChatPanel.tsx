@@ -28,17 +28,15 @@ type Props = {
   onHumanLatencyChange: (v: boolean) => void;
   onSendMessage: (text: string) => void;
   sessionPhase: SessionPhase;
-  onImDone: () => void;
-  /** When true, the "I'm Done" button is disabled (dry-run mode without trace). */
-  imDoneDisabled?: boolean;
-  /** Reason text surfaced as tooltip / helper when imDoneDisabled is true. */
-  imDoneDisabledReason?: string;
+  /** Submit current code for evaluation — runs hidden cases, opens Alex's review. */
+  onSubmit: () => void;
+  /** When true, the Submit button is disabled (dry-run mode without a trace). */
+  submitDisabled?: boolean;
+  /** Reason text surfaced as tooltip / helper when submitDisabled is true. */
+  submitDisabledReason?: string;
   followUpSegment?: FollowUpSegment;
-  /** Next banked variant still available after this slice review. */
-  hasPendingBankedVariant?: boolean;
+  /** Candidate escape hatch — skip remaining variants and go to final Q&A. */
   onSkipToFinalFollowUp?: () => void;
-  onProceedFromSlice?: () => void;
-  onSliceToFinalQuestions?: () => void;
   onContinueToFeedback: () => void;
   inputDisabled?: boolean;
   /** True while any AI stream is in progress (scroll follows streaming output). */
@@ -82,14 +80,11 @@ export function ChatPanel({
   onHumanLatencyChange,
   onSendMessage,
   sessionPhase,
-  onImDone,
-  imDoneDisabled = false,
-  imDoneDisabledReason,
+  onSubmit,
+  submitDisabled = false,
+  submitDisabledReason,
   followUpSegment = "final",
-  hasPendingBankedVariant = false,
   onSkipToFinalFollowUp,
-  onProceedFromSlice,
-  onSliceToFinalQuestions,
   onContinueToFeedback,
   inputDisabled,
   isStreaming = false,
@@ -610,58 +605,48 @@ export function ChatPanel({
           <div className="flex flex-col gap-1.5">
             <button
               type="button"
-              onClick={onImDone}
-              disabled={chatLocked || imDoneDisabled}
+              onClick={onSubmit}
+              disabled={chatLocked || submitDisabled}
               title={
-                imDoneDisabled
-                  ? imDoneDisabledReason
-                  : "Discuss this version with Alex before the next coding task"
+                submitDisabled
+                  ? submitDisabledReason
+                  : "Submit for evaluation — runs the hidden tests and has Alex review your solution"
               }
-              className="w-full rounded-lg bg-amber-600 px-4 py-2.5 text-sm font-medium text-white transition enabled:hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition enabled:hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Discuss this version
+              Submit for review
             </button>
             {onSkipToFinalFollowUp && (
               <button
                 type="button"
                 onClick={onSkipToFinalFollowUp}
-                disabled={chatLocked || imDoneDisabled}
+                disabled={chatLocked || submitDisabled}
                 className="w-full rounded-lg border border-zinc-600 bg-zinc-900/80 px-4 py-2 text-sm font-medium text-zinc-200 transition enabled:hover:border-zinc-500 enabled:hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Skip to final Q&amp;A
               </button>
             )}
             <p className="text-[11px] text-zinc-500">
-              After tests pass, Alex reviews your code here, then assigns the next
-              variant to implement.
+              Run (above the editor) self-checks the visible examples. Submit runs
+              the hidden tests and hands your solution to Alex to review, then he
+              moves you on.
             </p>
-            {imDoneDisabled && imDoneDisabledReason && (
-              <p className="text-[11px] text-amber-400/80">{imDoneDisabledReason}</p>
+            {submitDisabled && submitDisabledReason && (
+              <p className="text-[11px] text-amber-400/80">{submitDisabledReason}</p>
             )}
           </div>
         )}
         {sessionPhase === "followUp" && followUpSegment === "slice" && (
           <div className="flex flex-col gap-1.5">
-            {hasPendingBankedVariant && onProceedFromSlice && (
-              <button
-                type="button"
-                onClick={onProceedFromSlice}
-                disabled={inputDisabled}
-                className="w-full rounded-lg border border-emerald-700/70 bg-emerald-950/40 px-4 py-2.5 text-sm font-medium text-emerald-50 transition enabled:hover:border-emerald-500 enabled:bg-emerald-900/50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Continue — implement next variant
-              </button>
-            )}
-            {!hasPendingBankedVariant && onSliceToFinalQuestions && (
-              <button
-                type="button"
-                onClick={onSliceToFinalQuestions}
-                disabled={inputDisabled}
-                className="w-full rounded-lg border border-emerald-700/70 bg-emerald-950/40 px-4 py-2.5 text-sm font-medium text-emerald-50 transition enabled:hover:border-emerald-500 enabled:bg-emerald-900/50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Continue to final questions
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={inputDisabled || submitDisabled}
+              title="Edit your code and re-submit it for evaluation"
+              className="w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition enabled:hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Submit again
+            </button>
             {onSkipToFinalFollowUp && (
               <button
                 type="button"
@@ -672,6 +657,10 @@ export function ChatPanel({
                 Skip to final Q&amp;A
               </button>
             )}
+            <p className="text-[11px] text-zinc-500">
+              Reply to Alex, or edit your code and Submit again to re-evaluate. Alex
+              moves you on when the review wraps.
+            </p>
           </div>
         )}
         {sessionPhase === "followUp" && followUpSegment === "final" && (

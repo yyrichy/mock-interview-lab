@@ -1,4 +1,10 @@
-/** Max Judge0 test runs allowed per session. */
+/**
+ * Max Judge0 executions per session. Run (visible self-check) and Submit
+ * (visible+hidden grade) draw from this one shared counter so total Judge0 cost
+ * is bounded. Run is hard-blocked once the cap is hit; Submit is NEVER blocked
+ * ("free submission" — the candidate can always say "evaluate me"), it just
+ * still increments the counter for cost visibility.
+ */
 export const TEST_RUNS_MAX = 10;
 
 /** Hard cap on follow-up turns per session. Agent cannot exceed this. */

@@ -60,11 +60,19 @@ export type SessionState = Readonly<{
   followUpSegment?: "slice" | "final";
   /**
    * Transient per-turn hint (NOT persisted): set only when the app initiates a
-   * proactive coding-escalation turn. Carries the banked/autonomous variant
-   * prompt so the model delivers the escalation from state. Absent on normal
-   * turns; the app owns the trigger condition and variant selection.
+   * proactive coding-escalation turn. Carries the banked variant prompt so the
+   * model delivers the escalation from state. Absent on normal turns; the app
+   * owns the trigger condition and variant selection.
    */
   codingEscalationHint?: string;
+  /**
+   * Transient per-turn hint (NOT persisted): set only on the review turn that a
+   * candidate Submit triggers. Carries the submit grade as aggregate counts plus
+   * the human-readable DESCRIPTIONS of any failed hidden cases — never raw hidden
+   * input/expected/actual — so the model can open the review (post-pass) or probe
+   * the specific failed edge case by name. Absent on normal turns.
+   */
+  submitReviewHint?: string;
   question: Pick<
     Question,
     | "id"

@@ -53,7 +53,11 @@ import {
   FOLLOW_UP_AUTO_CLOSE_REMAINING_MS,
   FOLLOW_UP_SLICE_SAFETY_CAP,
 } from "@/lib/follow-up-config";
-import { FOLLOW_UP_SAFETY_CAP, ROUND_DURATION_MS } from "@/lib/interview-limits";
+import {
+  FOLLOW_UP_SAFETY_CAP,
+  ROUND_DURATION_MS,
+  TEST_RUNS_MAX,
+} from "@/lib/interview-limits";
 import type { FollowUpSegment } from "@/lib/chat";
 import type { PaceReport } from "@/lib/feedback";
 import { PHASE_BUDGET_MS } from "@/lib/phase-config";
@@ -67,6 +71,7 @@ import { assistantInvitesCodingWithoutToken } from "@/lib/planning-coding-invite
 import { buildCodingVoiceReport } from "@/lib/coding-voice-report";
 import {
   buildBankedEscalationHint,
+  buildSubmitReviewHint,
   getPendingBankedFollowUp,
 } from "@/lib/coding-escalation";
 
@@ -107,6 +112,47 @@ function formatTranscriptLog(entries: TranscriptEntry[]): string {
       (e) => `[${new Date(e.timestamp).toISOString()}] ${e.text}`
     )
     .join("\n");
+}
+
+// Inline completion signal the model emits when it has finished a review or
+// follow-up segment (mirrors the [->planning]/[->coding] phase tokens). The app
+// strips it from the displayed reply and advances the interview from state — the
+// model never picks the destination.
+const SEGMENT_DONE_TOKEN = "[segment-complete]";
+
+function stripSegmentDone(text: string): { cleaned: string; found: boolean } {
+  if (!text.includes(SEGMENT_DONE_TOKEN)) {
+    return { cleaned: text, found: false };
+  }
+  const cleaned = text
+    .split(SEGMENT_DONE_TOKEN)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleaned, found: true };
+}
+
+// True when a reply still ends on a question to the candidate. Used to hold the
+// slice-review advance: an over-eager caller sometimes appends [segment-complete]
+// to the SAME turn it asks its one focused review question. We honor the question
+// (wait for the reply) instead of skipping the candidate past it.
+function endsWithQuestion(text: string): boolean {
+  return /\?["')\]]*\s*$/.test(text.trim());
+}
+
+// The question-hold guard only applies to the slice (post-Submit) review. Routed
+// through a helper so the full FollowUpSegment union is preserved at call sites
+// where flow analysis has narrowed the ref to a single literal.
+function isSliceReview(segment: FollowUpSegment): boolean {
+  return segment === "slice";
+}
+
+// Identity of a submitted solution, for idempotent Submit. Strips per-line
+// trailing whitespace and any trailing blank lines so a no-op edit (stray space,
+// extra newline) does not count as a change. Leading/interior content is left
+// untouched — Python indentation matters and any real logic edit must register.
+function normalizeSubmittedCode(code: string): string {
+  return code.replace(/[ \t]+$/gm, "").replace(/\s+$/, "");
 }
 
 type SessionBoot = "pending" | "ready";
@@ -163,9 +209,19 @@ export function InterviewWorkspace({ question }: Props) {
     string | null
   >(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
-  // Set when tests pass while a stream is still in flight; the slice follow-up
-  // opener is retried once that stream finishes (see isStreaming effect).
-  const pendingSliceFollowUpRef = useRef(false);
+  // Set when a streaming turn emitted [segment-complete]; the deferred advance
+  // runs once that stream finishes (see isStreaming effect) so isStreamingRef has
+  // settled before the next turn starts.
+  const pendingSegmentAdvanceRef = useRef(false);
+  // Counts-only submit grade (+ failed-hidden descriptions) for the review turn a
+  // Submit triggers. Transient — consumed by enterSubmitReview, never persisted.
+  const pendingSubmitHintRef = useRef<string | null>(null);
+  // Idempotent Submit: normalized code of the last submission and its counts-only
+  // outcome label. A re-submit of unchanged code re-shows the outcome and fires
+  // NO new review turn. Reset to null when a new variant's coding begins so the
+  // first submit of each variant always reviews.
+  const lastSubmittedCodeRef = useRef<string | null>(null);
+  const lastSubmitOutcomeRef = useRef<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [liveCaption, setLiveCaption] = useState("");
   const [speechError, setSpeechError] = useState<string | null>(null);
@@ -175,8 +231,9 @@ export function InterviewWorkspace({ question }: Props) {
   const [testRunError, setTestRunError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
   const [testAllPassed, setTestAllPassed] = useState<boolean | null>(null);
+  /** Counts-only banner after a Submit (e.g. "visible 7/7, hidden 5/7"). No hidden I/O. */
+  const [submitOutcome, setSubmitOutcome] = useState<string | null>(null);
   const lastTestResultRef = useRef<TestRunSummary | null>(null);
-  const pendingHiddenNudgeRef = useRef<string | null>(null);
   const [runMode, setRunMode] = usePersistedState<"standard" | "limited" | "dry-run">(
     "ai-interviewer:runMode",
     "standard",
@@ -226,7 +283,7 @@ export function InterviewWorkspace({ question }: Props) {
   const transcriptRef = useRef<TranscriptEntry[]>([]);
   const testRunLoadingRef = useRef(false);
   const handleRunTestsRef = useRef(() => {});
-  const handleImDoneRef = useRef(() => {});
+  const handleSubmitRef = useRef(() => {});
   const rollingContextRef = useRef<string | null>(null);
   // Set before each agent stream begins so the shared onData handler
   // (handleAgentDataEvent) can append error events to the currently-streaming
@@ -244,8 +301,9 @@ export function InterviewWorkspace({ question }: Props) {
     (raw) => (raw === "true" ? true : raw === "false" ? false : null),
     (v) => (v ? "true" : "false")
   );
+  // Set once the candidate's baseline passes both visible and hidden on a Submit.
+  // Drives whether banked variants are introduced. Ref-only (no render reads it).
   const baselineSolvedAtRef = useRef<number | null>(null);
-  const [baselineSolvedAt, setBaselineSolvedAt] = useState<number | null>(null);
   const codingEscalationStepRef = useRef(0);
   const escalationNudgeGenRef = useRef(0);
   // Cutoff for the ambient-tail merge: every typed/voice user message includes
@@ -255,9 +313,9 @@ export function InterviewWorkspace({ question }: Props) {
   // When tests pass during coding, we drain queued HINT(s) into here and the
   // proactive nudge runner consumes them. Treated as a single bundled HINT.
   const pendingProactiveEscalationHintRef = useRef<string | null>(null);
-  // Tracks which kind of increment the proactive nudge should perform on success.
+  // True when the queued proactive nudge is introducing a banked variant (drives
+  // the follow-up-count increment on success).
   const pendingProactiveBankedRef = useRef(false);
-  const pendingProactiveAutonomousRef = useRef(false);
   const [forcedWrap, setForcedWrap] = useState(false);
   const forcedWrapRef = useRef(false);
   const forcedWrapHintPendingRef = useRef(false);
@@ -280,29 +338,6 @@ export function InterviewWorkspace({ question }: Props) {
   const codingNowTick = useTickInterval(
     sessionPhase === "coding" && codingStartedAt !== null,
     1000
-  );
-
-  const remainingRoundMs = useMemo(() => {
-    if (roundStartTime === null) {
-      return ROUND_DURATION_MS;
-    }
-    return Math.max(0, ROUND_DURATION_MS - (roundNowTick - roundStartTime));
-  }, [roundStartTime, roundNowTick]);
-
-  const pendingBankedEscalation = useMemo(
-    () =>
-      getPendingBankedFollowUp(
-        question.followUps,
-        currentFollowUpIndex,
-        baselineSolvedAt,
-        remainingRoundMs
-      ),
-    [
-      question.followUps,
-      currentFollowUpIndex,
-      baselineSolvedAt,
-      remainingRoundMs,
-    ]
   );
 
   const speechSupported = useMemo(() => {
@@ -356,7 +391,6 @@ export function InterviewWorkspace({ question }: Props) {
       }
       roundTimedOutRef.current = saved.roundTimedOut;
       rollingContextRef.current = saved.rollingContext;
-      setBaselineSolvedAt(saved.baselineSolvedAt);
       baselineSolvedAtRef.current = saved.baselineSolvedAt;
       codingEscalationStepRef.current = saved.codingEscalationStep;
       bruteForceSkippedRef.current = saved.bruteForceSkipped;
@@ -492,18 +526,14 @@ export function InterviewWorkspace({ question }: Props) {
     messagesRef.current = messages;
   }, [messages]);
 
-  // Retry the deferred slice follow-up opener once any in-flight stream ends.
-  // handleRunTests sets pendingSliceFollowUpRef when tests pass mid-stream
-  // instead of dropping the transition.
+  // Deferred segment advance: a streaming turn that emitted [segment-complete]
+  // sets pendingSegmentAdvanceRef; the actual advance runs once the stream fully
+  // ends so isStreamingRef has settled before the next turn starts. This is also
+  // the path the slice safety-cap backstop uses to force the segment forward.
   useEffect(() => {
-    if (!isStreaming && pendingSliceFollowUpRef.current) {
-      pendingSliceFollowUpRef.current = false;
-      const alreadySlice =
-        sessionPhaseRef.current === "followUp" &&
-        followUpSegmentRef.current === "slice";
-      if (!alreadySlice) {
-        void enterSliceFollowUpPhase();
-      }
+    if (!isStreaming && pendingSegmentAdvanceRef.current) {
+      pendingSegmentAdvanceRef.current = false;
+      advanceAfterSegmentComplete();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming]);
@@ -554,7 +584,8 @@ export function InterviewWorkspace({ question }: Props) {
     }
 
     // Hard floor: never enter follow-up with less than the floor reserved.
-    // Precedence: this beats the verbal wrap trigger — hand off immediately.
+    // Precedence: this beats the verbal wrap trigger — hand off immediately into
+    // the forced verbal wrap (not a fresh Submit/review, which would burn time).
     if (
       phase === "coding" &&
       !forcedHandoffScheduledRef.current &&
@@ -562,7 +593,13 @@ export function InterviewWorkspace({ question }: Props) {
       remaining <= ROUND_THRESHOLDS.followUpFloorMs
     ) {
       forcedHandoffScheduledRef.current = true;
-      queueMicrotask(() => handleImDoneRef.current());
+      queueMicrotask(() => {
+        if (sessionPhaseRef.current !== "coding" || forcedWrapRef.current) {
+          return;
+        }
+        beginForcedVerbalWrapTransition();
+        void runForcedWrapOpener();
+      });
     }
 
     if (remaining <= 0 && !roundTimedOutRef.current) {
@@ -774,6 +811,29 @@ export function InterviewWorkspace({ question }: Props) {
     );
   }
 
+  /**
+   * Seam suppression: when a turn DELIBERATELY wrapped its segment (emitted
+   * [segment-complete] and is advancing) but had nothing to say, its bubble is
+   * empty after the token is stripped. That is NOT weak-caller silence — the model
+   * intentionally closed the segment — so remove the stray empty bubble instead of
+   * sealing it with the "didn't send a reply" fallback. This keeps the
+   * final→feedback handoff (and the slice→final / variant-skip seams) clean:
+   * feedback / the next segment opens directly after the real wrap, with no empty
+   * interviewer turn between. A bubble that has prose is left untouched.
+   */
+  function dropEmptyAssistantMessage(assistantId: string): void {
+    setMessages((prev) =>
+      prev.filter(
+        (m) =>
+          !(
+            m.id === assistantId &&
+            m.role === "assistant" &&
+            m.content.trim() === ""
+          )
+      )
+    );
+  }
+
   function filterBlankAssistantMessages(messagesForApi: ChatMessage[]): ChatMessage[] {
     return messagesForApi.filter(
       (m) => !(m.role === "assistant" && m.content.trim() === "")
@@ -967,6 +1027,13 @@ export function InterviewWorkspace({ question }: Props) {
     ) {
       return false;
     }
+    // Baseline correctness comes first: never introduce (and so never let the
+    // model pre-solve-skip) a harder variant until the baseline has passed
+    // visible+hidden. getPendingBankedFollowUp also enforces this; the explicit
+    // guard keeps the invariant local and refactor-proof.
+    if (baselineSolvedAtRef.current === null) {
+      return false;
+    }
     const pending = getPendingBankedFollowUp(
       question.followUps,
       currentFollowUpIndexRef.current,
@@ -983,7 +1050,6 @@ export function InterviewWorkspace({ question }: Props) {
       pending.followUp
     );
     pendingProactiveBankedRef.current = true;
-    pendingProactiveAutonomousRef.current = false;
     queueMicrotask(() => {
       void runCodingEscalationNudge();
     });
@@ -1025,9 +1091,7 @@ export function InterviewWorkspace({ question }: Props) {
     // Consume so a duplicate scheduling doesn't fire twice.
     pendingProactiveEscalationHintRef.current = null;
     const wasBanked = pendingProactiveBankedRef.current;
-    const wasAutonomous = pendingProactiveAutonomousRef.current;
     pendingProactiveBankedRef.current = false;
-    pendingProactiveAutonomousRef.current = false;
 
     const myGen = ++escalationNudgeGenRef.current;
     const assistantId = crypto.randomUUID();
@@ -1040,6 +1104,8 @@ export function InterviewWorkspace({ question }: Props) {
     pauseBgForAiRef.current = true;
     groqAmbientRef.current?.pauseForFocus();
     let streamOk = false;
+    let fullStreamed = "";
+    let segmentWrapped = false;
     try {
       // Folded into the single interviewer brain: instead of a separate scripted
       // /api/ai nudge, the app feeds the escalation trigger + selected variant as
@@ -1066,11 +1132,19 @@ export function InterviewWorkspace({ question }: Props) {
         if (myGen !== escalationNudgeGenRef.current) {
           return;
         }
+        fullStreamed += chunk;
+        const display = stripSegmentDone(fullStreamed).cleaned;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+            m.id === assistantId ? { ...m, content: display } : m
           )
         );
+      }
+      // Part 3 skip: the model may decide the current code already satisfies the
+      // variant and emit [segment-complete] instead of introducing it.
+      if (stripSegmentDone(fullStreamed).found) {
+        pendingSegmentAdvanceRef.current = true;
+        segmentWrapped = true;
       }
       streamOk = true;
     } catch (e) {
@@ -1094,7 +1168,11 @@ export function InterviewWorkspace({ question }: Props) {
       if (myGen === escalationNudgeGenRef.current) {
         setIsStreaming(false);
         clearStreamingId(assistantId);
-        finalizeAssistantMessage(assistantId);
+        if (segmentWrapped) {
+          dropEmptyAssistantMessage(assistantId);
+        } else {
+          finalizeAssistantMessage(assistantId);
+        }
         pauseBgForAiRef.current = false;
         if (streamOk) {
           codingEscalationStepRef.current += 1;
@@ -1115,8 +1193,6 @@ export function InterviewWorkspace({ question }: Props) {
               setFollowUpsReachedCount(next);
             }
           }
-          // Autonomous-only path: nothing else to track beyond the step bump.
-          void wasAutonomous;
         }
         if (sessionPhaseRef.current === "coding" && !focusedMicRef.current) {
           groqAmbientRef.current?.resumeFromFocus();
@@ -1168,6 +1244,8 @@ export function InterviewWorkspace({ question }: Props) {
     pauseBgForAiRef.current = true;
     groqAmbientRef.current?.pauseForFocus();
     currentAgentAssistantIdRef.current = assistantId;
+    let fullStreamed = "";
+    let segmentWrapped = false;
     try {
       for await (const chunk of streamInterviewerApi(
         {
@@ -1184,11 +1262,17 @@ export function InterviewWorkspace({ question }: Props) {
         if (myGen !== forcedWrapOpenerGenRef.current) {
           return;
         }
+        fullStreamed += chunk;
+        const display = stripSegmentDone(fullStreamed).cleaned;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+            m.id === assistantId ? { ...m, content: display } : m
           )
         );
+      }
+      if (stripSegmentDone(fullStreamed).found) {
+        pendingSegmentAdvanceRef.current = true;
+        segmentWrapped = true;
       }
     } catch (e) {
       if (myGen !== forcedWrapOpenerGenRef.current) {
@@ -1200,7 +1284,11 @@ export function InterviewWorkspace({ question }: Props) {
       if (myGen === forcedWrapOpenerGenRef.current) {
         setIsStreaming(false);
         clearStreamingId(assistantId);
-        finalizeAssistantMessage(assistantId);
+        if (segmentWrapped) {
+          dropEmptyAssistantMessage(assistantId);
+        } else {
+          finalizeAssistantMessage(assistantId);
+        }
         pauseBgForAiRef.current = false;
         // From now on, candidate replies during forced-wrap should carry the
         // assess+handoff HINT.
@@ -1280,11 +1368,13 @@ export function InterviewWorkspace({ question }: Props) {
 
     const applyHumanLatency = humanLatency;
     let messageStreamOk = false;
+    // True once this turn emitted [segment-complete] AND is advancing the segment:
+    // an empty bubble here is a deliberate wrap, not weak-caller silence.
+    let segmentWrapped = false;
     if (phaseNow === "coding") {
       lastSentAmbientCutoffRef.current = now;
     }
     try {
-      pendingHiddenNudgeRef.current = null;
       // Phase-advance signal detection: AI may prefix its reply with [->planning]
       // or [->coding] (on its own line) to trigger a seamless phase transition.
       // We buffer the first bytes, strip the token if present, then stream normally.
@@ -1406,6 +1496,38 @@ export function InterviewWorkspace({ question }: Props) {
         );
       }
 
+      // Segment-complete signal: the model wraps a review / final Q&A (or skips
+      // an already-solved variant) by emitting [segment-complete], usually on its
+      // own final line. Strip it from the display and let the app advance once
+      // this stream ends. Gate the advance to post-baseline turns so a stray
+      // token during baseline coding can't jump the interview forward.
+      if (fullStreamedContent.includes(SEGMENT_DONE_TOKEN)) {
+        const cleaned = stripSegmentDone(
+          fullStreamedContent
+            .replace(/\[->planning\]\n?/g, "")
+            .replace(/\[->coding\]\n?/g, "")
+        ).cleaned;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, content: cleaned } : m
+          )
+        );
+        // Hold the advance if this slice-review turn still asks a question — the
+        // candidate must get to answer it before we move on, even if the model
+        // wrongly bundled the wrap token. The turn cap (FOLLOW_UP_SLICE_SAFETY_CAP)
+        // still backstops a model that never stops asking. Final-segment wraps are
+        // unaffected (followUpSegment is "final" there, not "slice").
+        const holdForAnswer =
+          isSliceReview(followUpSegmentRef.current) && endsWithQuestion(cleaned);
+        if (
+          (phaseNow === "followUp" || baselineSolvedAtRef.current !== null) &&
+          !holdForAnswer
+        ) {
+          pendingSegmentAdvanceRef.current = true;
+          segmentWrapped = true;
+        }
+      }
+
       messageStreamOk = true;
 
       // Apply AI-driven phase transition (signal was stripped from the message above).
@@ -1428,7 +1550,11 @@ export function InterviewWorkspace({ question }: Props) {
     } finally {
       setIsStreaming(false);
       clearStreamingId(assistantId);
-      finalizeAssistantMessage(assistantId);
+      if (segmentWrapped) {
+        dropEmptyAssistantMessage(assistantId);
+      } else {
+        finalizeAssistantMessage(assistantId);
+      }
       pauseBgForAiRef.current = false;
       if (
         phaseNow === "followUp" &&
@@ -1451,26 +1577,11 @@ export function InterviewWorkspace({ question }: Props) {
           : FOLLOW_UP_SAFETY_CAP;
         const hitSafety = turns >= cap;
         if (outOfTime || hitSafety) {
-          if (sliceSegment) {
-            if (sliceForceWrapUpRef.current) {
-              sliceForceWrapUpRef.current = false;
-              sliceAwaitingCandidateReplyRef.current = false;
-              setSliceGraceReply(false);
-              followUpSealedRef.current = true;
-              setFollowUpSealed(true);
-            } else if (!sliceAwaitingCandidateReplyRef.current) {
-              sliceAwaitingCandidateReplyRef.current = true;
-              setSliceGraceReply(true);
-            } else {
-              sliceAwaitingCandidateReplyRef.current = false;
-              setSliceGraceReply(false);
-              followUpSealedRef.current = true;
-              setFollowUpSealed(true);
-            }
-          }
-          // Non-slice cap/time hit: the model gives a verbal close from the
-          // followUp prompt; feedback itself is app-driven (Continue / round
-          // backstop), so the app does not auto-close here.
+          // Backstop only — the model normally drives the transition with
+          // [segment-complete]. If it hasn't wrapped within the cap, or time is
+          // nearly up, force the segment forward (advanceAfterSegmentComplete
+          // routes a slice review → next variant / final, and final → feedback).
+          pendingSegmentAdvanceRef.current = true;
         }
       }
       if (
@@ -1550,17 +1661,15 @@ export function InterviewWorkspace({ question }: Props) {
     }
   }
 
-  async function enterSliceFollowUpPhase(): Promise<void> {
-    if (
-      sessionPhaseRef.current === "followUp" &&
-      followUpSegmentRef.current === "slice"
-    ) {
-      return;
-    }
+  // Review turn triggered by a candidate Submit. Opens from the submit grade
+  // (post-pass acknowledgment or a ground-truth probe of the failed hidden case)
+  // and closes when the model emits [segment-complete].
+  async function enterSubmitReview(): Promise<void> {
     if (isStreamingRef.current) {
       return;
     }
 
+    pendingSegmentAdvanceRef.current = false;
     stopSnapshots();
     followUpSegmentRef.current = "slice";
     setFollowUpSegment("slice");
@@ -1580,6 +1689,16 @@ export function InterviewWorkspace({ question }: Props) {
     const assistantId = crypto.randomUUID();
     const historyForApi = filterBlankAssistantMessages(messagesRef.current);
 
+    // Fold the counts-only submit grade into this one turn's state, then consume
+    // it so later turns in the review don't keep re-opening from the grade.
+    const reviewState: SessionState = {
+      ...buildCurrentSessionState(),
+      ...(pendingSubmitHintRef.current
+        ? { submitReviewHint: pendingSubmitHintRef.current }
+        : {}),
+    };
+    pendingSubmitHintRef.current = null;
+
     setMessages((prev) => [
       ...prev,
       { id: assistantId, role: "assistant", content: "" },
@@ -1587,10 +1706,12 @@ export function InterviewWorkspace({ question }: Props) {
     markStreamStart(assistantId);
     currentAgentAssistantIdRef.current = assistantId;
 
+    let fullStreamed = "";
+    let segmentWrapped = false;
     try {
       for await (const chunk of streamInterviewerApi(
         {
-          sessionState: buildCurrentSessionState(),
+          sessionState: reviewState,
           messages: historyForApi,
           rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
@@ -1603,11 +1724,29 @@ export function InterviewWorkspace({ question }: Props) {
         if (myGen !== followUpGenRef.current) {
           return;
         }
+        fullStreamed += chunk;
+        const display = stripSegmentDone(fullStreamed).cleaned;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+            m.id === assistantId ? { ...m, content: display } : m
           )
         );
+      }
+      const wrapResult = stripSegmentDone(fullStreamed);
+      // Hold the advance if a slice-review wrap still poses a question: an
+      // over-eager caller sometimes appends [segment-complete] to the same turn it
+      // asks its one focused question (e.g. the opener), which would skip the
+      // candidate's answer. Final-segment wraps are unaffected (followUpSegment is
+      // "final" there, so holdForAnswer is always false).
+      if (
+        wrapResult.found &&
+        !(
+          isSliceReview(followUpSegmentRef.current) &&
+          endsWithQuestion(wrapResult.cleaned)
+        )
+      ) {
+        pendingSegmentAdvanceRef.current = true;
+        segmentWrapped = true;
       }
     } catch (e) {
       if (myGen !== followUpGenRef.current) {
@@ -1619,13 +1758,18 @@ export function InterviewWorkspace({ question }: Props) {
       if (myGen === followUpGenRef.current) {
         setIsStreaming(false);
         clearStreamingId(assistantId);
-        finalizeAssistantMessage(assistantId);
+        if (segmentWrapped) {
+          dropEmptyAssistantMessage(assistantId);
+        } else {
+          finalizeAssistantMessage(assistantId);
+        }
         followUpAssistantTurnsRef.current = 1;
       }
     }
   }
 
   async function enterFinalFollowUpPhase(): Promise<void> {
+    pendingSegmentAdvanceRef.current = false;
     stopSnapshots();
     followUpSegmentRef.current = "final";
     setFollowUpSegment("final");
@@ -1656,6 +1800,8 @@ export function InterviewWorkspace({ question }: Props) {
     markStreamStart(assistantId);
     currentAgentAssistantIdRef.current = assistantId;
 
+    let fullStreamed = "";
+    let segmentWrapped = false;
     try {
       for await (const chunk of streamInterviewerApi(
         {
@@ -1672,11 +1818,29 @@ export function InterviewWorkspace({ question }: Props) {
         if (myGen !== followUpGenRef.current) {
           return;
         }
+        fullStreamed += chunk;
+        const display = stripSegmentDone(fullStreamed).cleaned;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId ? { ...m, content: m.content + chunk } : m
+            m.id === assistantId ? { ...m, content: display } : m
           )
         );
+      }
+      const wrapResult = stripSegmentDone(fullStreamed);
+      // Hold the advance if a slice-review wrap still poses a question: an
+      // over-eager caller sometimes appends [segment-complete] to the same turn it
+      // asks its one focused question (e.g. the opener), which would skip the
+      // candidate's answer. Final-segment wraps are unaffected (followUpSegment is
+      // "final" there, so holdForAnswer is always false).
+      if (
+        wrapResult.found &&
+        !(
+          isSliceReview(followUpSegmentRef.current) &&
+          endsWithQuestion(wrapResult.cleaned)
+        )
+      ) {
+        pendingSegmentAdvanceRef.current = true;
+        segmentWrapped = true;
       }
     } catch (e) {
       if (myGen !== followUpGenRef.current) {
@@ -1688,17 +1852,26 @@ export function InterviewWorkspace({ question }: Props) {
       if (myGen === followUpGenRef.current) {
         setIsStreaming(false);
         clearStreamingId(assistantId);
-        finalizeAssistantMessage(assistantId);
+        if (segmentWrapped) {
+          dropEmptyAssistantMessage(assistantId);
+        } else {
+          finalizeAssistantMessage(assistantId);
+        }
         followUpAssistantTurnsRef.current = 1;
       }
     }
   }
 
-  async function proceedFromSliceToCoding(): Promise<void> {
-    if (isStreaming) {
-      return;
-    }
-
+  // Re-enter coding so the candidate can implement the next variant (Run/Submit
+  // become available again). Used by advanceAfterSegmentComplete.
+  function enterCodingForVariant(): void {
+    pendingSegmentAdvanceRef.current = false;
+    setSubmitOutcome(null);
+    // Each variant is a fresh thing to submit — clear the last-submission identity
+    // so the FIRST submit of the variant always fires a review (not suppressed as
+    // "unchanged" against the baseline submission).
+    lastSubmittedCodeRef.current = null;
+    lastSubmitOutcomeRef.current = null;
     followUpGenRef.current += 1;
     followUpSealedRef.current = false;
     setFollowUpSealed(false);
@@ -1717,38 +1890,209 @@ export function InterviewWorkspace({ question }: Props) {
       () => codeRef.current,
       () => formatTranscriptLog(transcriptRef.current)
     );
-
-    if (tryScheduleBankedCodingEscalation()) {
-      return;
-    }
-
-    const remainingMs = getRemainingRoundMsNow();
-    const autonomousThresholdMs =
-      ROUND_THRESHOLDS.forcedStopTriggerMs + 3 * 60_000;
-    if (
-      baselineSolvedAtRef.current !== null &&
-      remainingMs > autonomousThresholdMs
-    ) {
-      const minutesLeft = Math.round(remainingMs / 60_000);
-      pendingProactiveEscalationHintRef.current = `Autonomous escalation unlocked: roughly ${minutesLeft} min remain. Propose ONE concrete escalation in the same problem family and ask them to implement it in the editor (update code, run tests). One ask, then wait.`;
-      pendingProactiveBankedRef.current = false;
-      pendingProactiveAutonomousRef.current = true;
-      await runCodingEscalationNudge();
-      return;
-    }
-
-    await enterFinalFollowUpPhase();
   }
 
-  async function handleImDone() {
-    if (isStreaming || sessionPhase !== "coding") {
+  // Deterministic transition after a [segment-complete] (or a backstop). The app
+  // — NOT the model's token — owns the advance decision. The token is advisory:
+  // a weak caller (or a confused strong one) will emit it even on a failing
+  // submit, and we must not let that end the segment.
+  function advanceAfterSegmentComplete(): void {
+    if (sessionPhaseRef.current === "feedback" || isStreamingRef.current) {
       return;
     }
-    if (runMode === "dry-run" && traceContent.trim().length === 0) {
+    // Forced verbal wrap, or the final Q&A segment completing → end the round.
+    if (
+      forcedWrapRef.current ||
+      (sessionPhaseRef.current === "followUp" &&
+        followUpSegmentRef.current === "final")
+    ) {
+      void runFinalFeedbackStream();
       return;
     }
 
-    await enterSliceFollowUpPhase();
+    // Baseline-solved gate. baselineSolvedAt is set ONLY when a Submit passes both
+    // visible AND hidden, so until it is set the problem is not actually solved.
+    // A [segment-complete] on such a failing submit must NOT advance:
+    //   - time remains → ignore the token and stay put. The candidate is in the
+    //     review with the editor unlocked and Submit available again, so they can
+    //     fix the bug and re-submit. Correctness comes before any harder variant.
+    //   - out of time → give up gracefully: wrap to the final segment, and the
+    //     round-clock / forced-wrap backstops drive feedback from there.
+    if (baselineSolvedAtRef.current === null) {
+      const outOfTime =
+        roundTimedOutRef.current ||
+        getRemainingRoundMsNow() <= FOLLOW_UP_AUTO_CLOSE_REMAINING_MS;
+      if (outOfTime) {
+        void enterFinalFollowUpPhase();
+      }
+      return;
+    }
+
+    // Baseline solved → advance: next banked variant if one fits, else final Q&A.
+    const pending = getPendingBankedFollowUp(
+      question.followUps,
+      currentFollowUpIndexRef.current,
+      baselineSolvedAtRef.current,
+      getRemainingRoundMsNow()
+    );
+    if (pending !== null) {
+      enterCodingForVariant();
+      if (tryScheduleBankedCodingEscalation()) {
+        return;
+      }
+    }
+    void enterFinalFollowUpPhase();
+  }
+
+  // Submit = "evaluate me." Runs the FULL Judge0 set (visible + hidden — for a
+  // variant this re-runs the baseline hidden cases), records the grade, then
+  // opens Alex's review with the counts-only hint. Never hard-blocked by the run
+  // cap (free submission); it still increments the shared counter.
+  async function handleSubmit(): Promise<void> {
+    // Submit is available while coding a baseline/variant, and also during a
+    // submission review (followUp/slice) so the candidate can fix a failed
+    // submission and re-submit it. Not in the final Q&A segment.
+    const inReview =
+      sessionPhaseRef.current === "followUp" &&
+      followUpSegmentRef.current === "slice";
+    if (
+      isStreaming ||
+      testRunLoadingRef.current ||
+      forcedWrapRef.current ||
+      (sessionPhaseRef.current !== "coding" && !inReview)
+    ) {
+      return;
+    }
+    if (runMode === "dry-run") {
+      if (traceContent.trim().length === 0) {
+        return;
+      }
+      // Trace mode: no execution — review the traced approach without a grade.
+      pendingSubmitHintRef.current = null;
+      setSubmitOutcome(null);
+      await enterSubmitReview();
+      return;
+    }
+    if (!codeRef.current.trim()) {
+      setTestRunError("Add code before submitting.");
+      return;
+    }
+
+    // Idempotent Submit: if nothing changed since the last submission, do NOT
+    // fire a new review turn (that re-asks the question Alex just asked). Quietly
+    // re-surface the last counts-only outcome and stop — no Judge0 grade, no
+    // streaming turn, no segment advance, baselineSolvedAt untouched.
+    const submittedCode = codeRef.current;
+    const normalizedSubmission = normalizeSubmittedCode(submittedCode);
+    if (
+      lastSubmittedCodeRef.current !== null &&
+      lastSubmittedCodeRef.current === normalizedSubmission
+    ) {
+      if (lastSubmitOutcomeRef.current) {
+        setSubmitOutcome(`Already submitted — ${lastSubmitOutcomeRef.current}`);
+      }
+      return;
+    }
+
+    // Synchronous guard against a double-submit while the Judge0 call is in
+    // flight (Submit does not set isStreaming, so the button stays enabled).
+    testRunLoadingRef.current = true;
+    setTestRunLoading(true);
+    setTestRunError(null);
+    try {
+      const res = await fetch("/api/judge0", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: submittedCode,
+          testCases: question.testCases,
+          hiddenTestCases: question.hiddenTestCases ?? [],
+          entryFunction: question.entryFunction,
+        }),
+      });
+      const data: unknown = await res.json();
+      if (
+        !res.ok ||
+        typeof data !== "object" ||
+        data === null ||
+        !("passed" in data) ||
+        !("results" in data) ||
+        typeof (data as { passed: unknown }).passed !== "boolean" ||
+        !Array.isArray((data as { results: unknown }).results)
+      ) {
+        const err =
+          typeof data === "object" &&
+          data !== null &&
+          "error" in data &&
+          typeof (data as { error: unknown }).error === "string"
+            ? (data as { error: string }).error
+            : "Submission run failed";
+        setTestRunError(err);
+        pendingSubmitHintRef.current = null;
+        setSubmitOutcome(null);
+      } else {
+        const runResult = data as RunCodeResult;
+        const { passed, results, hiddenPassed, hiddenResults } = runResult;
+        lastTestResultRef.current = buildTestRunSummary(runResult);
+        setTestResults(results);
+        setTestAllPassed(passed);
+
+        // Shared run counter — Submit increments it but is never blocked by it.
+        const nextRun = runCountRef.current + 1;
+        runCountRef.current = nextRun;
+        setRunCount(nextRun);
+
+        // First fully-passing submission with no prior failing run → the
+        // candidate skipped the brute-force → optimal arc. Feeds the pace report.
+        if (!firstTestRunConsumedRef.current) {
+          firstTestRunConsumedRef.current = true;
+          if (passed && hiddenPassed) {
+            bruteForceSkippedRef.current = true;
+          }
+        }
+
+        // Baseline counts as solved only when BOTH visible and hidden pass — this
+        // gates whether banked variants are introduced after the review.
+        if (passed && hiddenPassed && baselineSolvedAtRef.current === null) {
+          baselineSolvedAtRef.current = Date.now();
+        }
+
+        const visiblePassedCount = results.filter((r) => r.passed).length;
+        const hiddenPassedCount = hiddenResults.filter((r) => r.passed).length;
+        const failedHiddenDescriptions = (question.hiddenTestCases ?? [])
+          .filter(
+            (_, i) => i < hiddenResults.length && !hiddenResults[i].passed
+          )
+          .map((tc) => tc.description)
+          .filter((d): d is string => typeof d === "string");
+        pendingSubmitHintRef.current = buildSubmitReviewHint({
+          visiblePassed: passed,
+          hiddenPassed,
+          visiblePassedCount,
+          visibleTotal: results.length,
+          hiddenPassedCount,
+          hiddenTotal: hiddenResults.length,
+          failedHiddenDescriptions,
+        });
+        const countsLabel = `visible ${visiblePassedCount}/${results.length}, hidden ${hiddenPassedCount}/${hiddenResults.length}`;
+        setSubmitOutcome(`Submitted — ${countsLabel}`);
+        // Remember this graded submission (pass OR fail) so an unchanged
+        // re-submit short-circuits instead of re-reviewing.
+        lastSubmittedCodeRef.current = normalizedSubmission;
+        lastSubmitOutcomeRef.current = countsLabel;
+      }
+    } catch (e) {
+      setTestRunError(e instanceof Error ? e.message : String(e));
+      pendingSubmitHintRef.current = null;
+      setSubmitOutcome(null);
+    } finally {
+      testRunLoadingRef.current = false;
+      setTestRunLoading(false);
+    }
+
+    // Submit always hands off to Alex's review, whatever the grade (or a Judge0
+    // error — the review just opens without a grade in that case).
+    await enterSubmitReview();
   }
 
   async function handleSkipToFinalFollowUp() {
@@ -1760,25 +2104,6 @@ export function InterviewWorkspace({ question }: Props) {
       runMode === "dry-run" &&
       traceContent.trim().length === 0
     ) {
-      return;
-    }
-    skipRemainingBankedFollowUps();
-    await enterFinalFollowUpPhase();
-  }
-
-  async function handleProceedFromSlice() {
-    if (
-      isStreaming ||
-      sessionPhase !== "followUp" ||
-      followUpSegment !== "slice"
-    ) {
-      return;
-    }
-    await proceedFromSliceToCoding();
-  }
-
-  async function handleSliceToFinalQuestions() {
-    if (isStreaming || sessionPhase !== "followUp") {
       return;
     }
     skipRemainingBankedFollowUps();
@@ -1859,6 +2184,10 @@ export function InterviewWorkspace({ question }: Props) {
     }
   }
 
+  // Candidate end-action: explicitly finish the final Q&A and get the written
+  // feedback. Kept as a candidate-facing control (alongside the model's
+  // [segment-complete] signal and the round-clock backstop) so the interview is
+  // never stuck waiting on a token. It generates feedback, not an empty turn.
   async function handleContinueToFeedback() {
     if (
       isStreaming ||
@@ -1876,6 +2205,10 @@ export function InterviewWorkspace({ question }: Props) {
 
   const MAX_LIMITED_RUNS = 3;
 
+  // Run = private VISIBLE self-check. Executes only the visible cases, shows
+  // pass/fail, and triggers NO interviewer turn. It deliberately does NOT touch
+  // lastTestResultRef (the model's evidence reflects the last Submit, not casual
+  // self-checks). Counts toward the shared run cap and is hard-blocked at it.
   async function handleRunTests() {
     if (forcedWrapRef.current) {
       // Editor locked for verbal wrap-up — no further runs accepted.
@@ -1883,23 +2216,26 @@ export function InterviewWorkspace({ question }: Props) {
     }
     if (!codeRef.current.trim()) {
       setTestRunError("Add code before running tests.");
-      lastTestResultRef.current = null;
       setTestResults(null);
       setTestAllPassed(null);
-      return;
-    }
-    if (runMode === "limited" && runCountRef.current >= MAX_LIMITED_RUNS) {
-      setTestRunError(`Run limit reached (${MAX_LIMITED_RUNS} runs used).`);
       return;
     }
     if (runMode === "dry-run") {
       return; // button is hidden in dry-run mode
     }
-    if (runMode === "limited") {
-      const next = runCountRef.current + 1;
-      runCountRef.current = next;
-      setRunCount(next);
+    if (runMode === "limited" && runCountRef.current >= MAX_LIMITED_RUNS) {
+      setTestRunError(`Run limit reached (${MAX_LIMITED_RUNS} runs used).`);
+      return;
     }
+    if (runCountRef.current >= TEST_RUNS_MAX) {
+      setTestRunError(
+        `Run limit reached (${TEST_RUNS_MAX} executions used). You can still Submit to be evaluated.`
+      );
+      return;
+    }
+    const next = runCountRef.current + 1;
+    runCountRef.current = next;
+    setRunCount(next);
     setTestRunLoading(true);
     setTestRunError(null);
     try {
@@ -1909,7 +2245,9 @@ export function InterviewWorkspace({ question }: Props) {
         body: JSON.stringify({
           code: codeRef.current,
           testCases: question.testCases,
-          hiddenTestCases: question.hiddenTestCases ?? [],
+          // Visible-only: a Run never executes hidden cases. Hidden grading is
+          // reserved for Submit.
+          hiddenTestCases: [],
           entryFunction: question.entryFunction,
         }),
       });
@@ -1923,7 +2261,6 @@ export function InterviewWorkspace({ question }: Props) {
             ? (data as { error: string }).error
             : "Request failed";
         setTestRunError(err);
-        lastTestResultRef.current = null;
         setTestResults(null);
         setTestAllPassed(null);
         return;
@@ -1937,82 +2274,15 @@ export function InterviewWorkspace({ question }: Props) {
         !Array.isArray((data as { results: unknown }).results)
       ) {
         setTestRunError("Invalid response from server");
-        lastTestResultRef.current = null;
         setTestResults(null);
         setTestAllPassed(null);
         return;
       }
       const runResult = data as RunCodeResult;
-      const { passed, results, hiddenPassed, hiddenResults } = runResult;
-      lastTestResultRef.current = buildTestRunSummary(runResult);
-      setTestResults(results);
-      setTestAllPassed(passed);
-
-      // First-ever test run: detect "brute-force skipped" — candidate's first
-      // submitted code passes every visible and hidden case without an
-      // observed brute-force → optimal arc. Feeds the pace report.
-      if (!firstTestRunConsumedRef.current) {
-        firstTestRunConsumedRef.current = true;
-        if (passed && hiddenPassed) {
-          bruteForceSkippedRef.current = true;
-        }
-      }
-
-      const queuedNudges: string[] = [];
-
-      // Progressive escalation: fire when visible tests pass during coding.
-      // We pick the strongest available HINT (banked > autonomous) and fire a
-      // PROACTIVE interviewer message right away — no need to wait for the
-      // candidate to type something. Forced-wrap mode short-circuits the whole
-      // thing (we're about to hand off, no point in escalating).
-      if (
-        passed &&
-        sessionPhaseRef.current === "coding" &&
-        !forcedWrapRef.current
-      ) {
-        const now = Date.now();
-        if (baselineSolvedAtRef.current === null) {
-          baselineSolvedAtRef.current = now;
-          setBaselineSolvedAt(now);
-        }
-
-        // If a stream is still in flight (e.g. a proactive nudge), defer the
-        // slice opener instead of dropping it — the isStreaming effect retries
-        // it once the stream ends.
-        if (isStreamingRef.current) {
-          pendingSliceFollowUpRef.current = true;
-        } else {
-          queueMicrotask(() => {
-            void enterSliceFollowUpPhase();
-          });
-        }
-      }
-
-      // If any hidden tests failed, append (do not overwrite) a nudge.
-      if (!hiddenPassed && hiddenResults.length > 0) {
-        const failedCases = hiddenResults.filter((r) => !r.passed);
-        const descriptions = (question.hiddenTestCases ?? [])
-          .filter((_, i) => i < hiddenResults.length && !hiddenResults[i].passed)
-          .map((tc) => tc.description)
-          .filter((d): d is string => typeof d === "string");
-        const summary =
-          descriptions.length > 0
-            ? descriptions.join("; ")
-            : `${failedCases.length} hidden edge-case${failedCases.length !== 1 ? "s" : ""}`;
-        queuedNudges.push(
-          `Candidate's code failed hidden test case(s): ${summary}.`
-        );
-      }
-
-      if (queuedNudges.length > 0) {
-        pendingHiddenNudgeRef.current = [
-          ...(pendingHiddenNudgeRef.current ? [pendingHiddenNudgeRef.current] : []),
-          ...queuedNudges,
-        ].join(" ");
-      }
+      setTestResults(runResult.results);
+      setTestAllPassed(runResult.passed);
     } catch (e) {
       setTestRunError(e instanceof Error ? e.message : String(e));
-      lastTestResultRef.current = null;
       setTestResults(null);
       setTestAllPassed(null);
     } finally {
@@ -2062,11 +2332,13 @@ export function InterviewWorkspace({ question }: Props) {
     rollingContextRef.current = null;
     runCountRef.current = 0;
     setRunCount(0);
-    pendingHiddenNudgeRef.current = null;
+    setSubmitOutcome(null);
+    pendingSubmitHintRef.current = null;
+    lastSubmittedCodeRef.current = null;
+    lastSubmitOutcomeRef.current = null;
     pendingProactiveEscalationHintRef.current = null;
     pendingProactiveBankedRef.current = false;
-    pendingProactiveAutonomousRef.current = false;
-    pendingSliceFollowUpRef.current = false;
+    pendingSegmentAdvanceRef.current = false;
     streamingAssistantIdRef.current = null;
     setStreamingAssistantId(null);
     escalationNudgeGenRef.current += 1;
@@ -2075,7 +2347,6 @@ export function InterviewWorkspace({ question }: Props) {
     firstTestRunConsumedRef.current = false;
     followUpAutoCloseByTimeCheckedRef.current = false;
     baselineSolvedAtRef.current = null;
-    setBaselineSolvedAt(null);
     codingEscalationStepRef.current = 0;
     forcedWrapRef.current = false;
     setForcedWrap(false);
@@ -2100,8 +2371,8 @@ export function InterviewWorkspace({ question }: Props) {
   handleRunTestsRef.current = () => {
     void handleRunTests();
   };
-  handleImDoneRef.current = () => {
-    void handleImDone();
+  handleSubmitRef.current = () => {
+    void handleSubmit();
   };
 
   useCodingShortcuts({
@@ -2109,7 +2380,7 @@ export function InterviewWorkspace({ question }: Props) {
     testRunLoadingRef,
     isStreamingRef,
     onRunTests: () => handleRunTestsRef.current(),
-    onImDone: () => handleImDoneRef.current(),
+    onImDone: () => handleSubmitRef.current(),
   });
 
   const codingElapsedLabel =
@@ -2240,7 +2511,9 @@ export function InterviewWorkspace({ question }: Props) {
               <>
                 <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-800 bg-zinc-900/80 px-3 py-2">
                   <span className="mr-auto text-[11px] text-zinc-500">
-                    {runMode !== "dry-run" ? "Ctrl+Enter" : "Trace mode — no execution"}
+                    {runMode !== "dry-run"
+                      ? "Run = visible self-check · Submit (in chat) = full evaluation"
+                      : "Trace mode — no execution"}
                   </span>
                   <label className="flex items-center gap-1 text-[11px] text-zinc-500">
                     Mode:
@@ -2265,18 +2538,25 @@ export function InterviewWorkspace({ question }: Props) {
                       disabled={
                         testRunLoading ||
                         question.testCases.length === 0 ||
-                        (runMode === "limited" && runCount >= MAX_LIMITED_RUNS)
+                        (runMode === "limited" && runCount >= MAX_LIMITED_RUNS) ||
+                        runCount >= TEST_RUNS_MAX
                       }
-                      className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Run the visible example tests only — a private self-check. Use Submit (in the chat panel) to be evaluated."
+                      className="rounded-md border border-emerald-600/70 bg-emerald-950/40 px-3 py-1.5 text-sm font-medium text-emerald-100 transition hover:bg-emerald-900/50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {testRunLoading
                         ? "Running…"
                         : runMode === "limited"
-                          ? `Run tests (${runCount}/${MAX_LIMITED_RUNS})`
-                          : "Run tests"}
+                          ? `Run visible (${runCount}/${MAX_LIMITED_RUNS})`
+                          : "Run visible tests"}
                     </button>
                   )}
                 </div>
+                {submitOutcome && (
+                  <div className="shrink-0 border-t border-zinc-800 bg-amber-950/20 px-3 py-1.5 text-[11px] text-amber-200">
+                    {submitOutcome} — hidden cases evaluated (their inputs stay hidden).
+                  </div>
+                )}
                 {runMode === "dry-run" ? (
                   <div className="shrink-0 border-t border-zinc-800 bg-zinc-900/60 px-3 py-2">
                     <p className="mb-1 text-[11px] text-zinc-500">
@@ -2318,17 +2598,14 @@ export function InterviewWorkspace({ question }: Props) {
               onSendMessage={sendUserMessage}
               sessionPhase={sessionPhase}
               followUpSegment={followUpSegment}
-              hasPendingBankedVariant={pendingBankedEscalation !== null}
-              onImDone={() => void handleImDone()}
+              onSubmit={() => void handleSubmit()}
               onSkipToFinalFollowUp={() => void handleSkipToFinalFollowUp()}
-              onProceedFromSlice={() => void handleProceedFromSlice()}
-              onSliceToFinalQuestions={() => void handleSliceToFinalQuestions()}
-              imDoneDisabled={
+              submitDisabled={
                 sessionPhase === "coding" &&
                 runMode === "dry-run" &&
                 traceContent.trim().length === 0
               }
-              imDoneDisabledReason="Fill in the trace table before marking done (dry-run mode)."
+              submitDisabledReason="Fill in the trace table before submitting (dry-run mode)."
               onContinueToFeedback={() => void handleContinueToFeedback()}
               inputDisabled={isStreaming}
               speechSupported={speechSupported}
