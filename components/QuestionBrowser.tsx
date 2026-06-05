@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import type { Question } from "@/lib/questions";
+import type { PublicQuestion } from "@/lib/questions";
 
 type Props = {
-  questions: Question[];
+  questions: PublicQuestion[];
   allLabels: string[];
   allCompanies: string[];
   allDifficulties: string[];
@@ -85,7 +85,7 @@ function toggleInSet(set: Set<string>, value: string): Set<string> {
   return next;
 }
 
-function QuestionCard({ q }: { q: Question }) {
+function QuestionCard({ q }: { q: PublicQuestion }) {
   return (
     <Link
       href={`/interview/${q.id}`}
@@ -195,11 +195,11 @@ export default function QuestionBrowser({
     return m;
   }, [questions]);
 
-  const grouped = useMemo<{ key: string; items: Question[] }[]>(() => {
+  const grouped = useMemo<{ key: string; items: PublicQuestion[] }[]>(() => {
     if (groupBy === "none") {
       return [{ key: "All questions", items: filtered }];
     }
-    const buckets = new Map<string, Question[]>();
+    const buckets = new Map<string, PublicQuestion[]>();
     for (const q of filtered) {
       const keys: string[] =
         groupBy === "difficulty"
@@ -223,7 +223,7 @@ export default function QuestionBrowser({
         : groupBy === "label"
           ? allLabels
           : allCompanies;
-    const result: { key: string; items: Question[] }[] = [];
+    const result: { key: string; items: PublicQuestion[] }[] = [];
     for (const k of order) {
       if (buckets.has(k)) {
         result.push({ key: k, items: buckets.get(k) ?? [] });

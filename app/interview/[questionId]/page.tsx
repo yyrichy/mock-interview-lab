@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { InterviewWorkspace } from "@/components/InterviewWorkspace";
-import { getQuestionById } from "@/lib/questions";
+import { getPublicQuestionById } from "@/lib/questions";
 
 type PageProps = {
   params: Promise<{ questionId: string }>;
@@ -10,7 +10,10 @@ type PageProps = {
 
 export default async function InterviewPage({ params }: PageProps) {
   const { questionId } = await params;
-  const question = getQuestionById(questionId);
+  // Only the browser-safe shape is handed to the client workspace. The full
+  // Question (interviewerContext, hiddenTestCases) is loaded server-side in the
+  // /api/interviewer and /api/judge0 routes by questionId.
+  const question = getPublicQuestionById(questionId);
 
   if (!question) {
     notFound();

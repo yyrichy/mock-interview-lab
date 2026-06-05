@@ -29,10 +29,62 @@ export type Question = {
   followUps?: FollowUp[];
 };
 
+/** A follow-up variant with its server-only hidden test cases stripped. */
+export type PublicFollowUp = Omit<FollowUp, "hiddenTestCases">;
+
+/**
+ * Browser-safe Question. The grading fields the model uses but the candidate
+ * must never see — `interviewerContext` and every `hiddenTestCases` array
+ * (baseline AND per-follow-up) — are removed. This is the ONLY question shape a
+ * client component may receive. Never widen it back toward `Question` across the
+ * client boundary; load the full `Question` server-side instead.
+ */
+export type PublicQuestion = Omit<
+  Question,
+  "interviewerContext" | "hiddenTestCases" | "followUps"
+> & {
+  followUps?: PublicFollowUp[];
+};
+
 const questions = questionsData as Question[];
+
+/**
+ * Strip every server-only grading field from a Question. Whitelist (not
+ * blacklist) construction: a new sensitive field added to Question will NOT leak
+ * to the browser unless it is explicitly added here.
+ */
+export function toPublicQuestion(question: Question): PublicQuestion {
+  return {
+    id: question.id,
+    title: question.title,
+    difficulty: question.difficulty,
+    company: question.company,
+    labels: question.labels,
+    entryFunction: question.entryFunction,
+    candidateDescription: question.candidateDescription,
+    starterCode: question.starterCode,
+    testCases: question.testCases,
+    followUps: question.followUps?.map((f) => ({
+      id: f.id,
+      prompt: f.prompt,
+      expectedMinutes: f.expectedMinutes,
+    })),
+  };
+}
 
 export function getQuestionById(id: string): Question | undefined {
   return questions.find((q) => q.id === id);
+}
+
+/** Browser-safe lookup: full question minus server-only grading fields. */
+export function getPublicQuestionById(id: string): PublicQuestion | undefined {
+  const question = getQuestionById(id);
+  return question ? toPublicQuestion(question) : undefined;
+}
+
+/** Browser-safe list for the question browser. */
+export function getAllPublicQuestions(): PublicQuestion[] {
+  return questions.map(toPublicQuestion);
 }
 
 export function getAllQuestionIds(): string[] {
@@ -49,7 +101,7 @@ const DIFFICULTY_ORDER: Record<string, number> = {
   hard: 2,
 };
 
-export function compareQuestions(a: Question, b: Question): number {
+export function compareQuestions(a: PublicQuestion, b: PublicQuestion): number {
   const da = DIFFICULTY_ORDER[a.difficulty.toLowerCase()] ?? 99;
   const db = DIFFICULTY_ORDER[b.difficulty.toLowerCase()] ?? 99;
   if (da !== db) {
@@ -90,7 +142,7 @@ export function getAllDifficulties(): string[] {
 
 /** Problem text as Python line comments + starter code for Monaco. */
 /** Plain problem text for AI prompts (opening, feedback). */
-export function questionToProblemStatement(question: Question): string {
+export function questionToProblemStatement(question: PublicQuestion): string {
   const lines: string[] = [
     question.title,
     `Difficulty: ${question.difficulty}`,
@@ -108,7 +160,7 @@ export function questionToProblemStatement(question: Question): string {
   return lines.join("\n");
 }
 
-export function questionToEditorInitialValue(question: Question): string {
+export function questionToEditorInitialValue(question: PublicQuestion): string {
   const lines: string[] = [];
   lines.push(`# ${question.title}`);
   lines.push(`# Difficulty: ${question.difficulty}`);

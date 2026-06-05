@@ -101,19 +101,17 @@ export async function POST(req: NextRequest) {
     // body transcript is the live value — overrides sessionState.transcript
     // which is the turn-start snapshot. buildTools(state) reads
     // state.transcript internally, so we merge here.
-    // interviewerContext is always taken from the server question bank (never
-    // trust the client payload) so Alex can answer clarifications without
-    // exposing hidden tests in tool returns.
+    // interviewerContext is ALWAYS injected from the server question bank here —
+    // the client never holds it (it only has a PublicQuestion), and any value on
+    // the incoming payload is ignored — so Alex can grade and answer
+    // clarifications without that text ever crossing the browser.
     const bankQuestion = getQuestionById(sessionState.question.id);
     const stateForTurn: SessionState = {
       ...sessionState,
       transcript: transcript ?? [],
       question: {
         ...sessionState.question,
-        interviewerContext:
-          bankQuestion?.interviewerContext ??
-          sessionState.question.interviewerContext ??
-          "",
+        interviewerContext: bankQuestion?.interviewerContext ?? "",
       },
     };
 

@@ -4,7 +4,12 @@
 // for elapsed-time reasoning. SessionState only carries what agent tools need.
 
 import type { SessionPhase, TranscriptEntry } from "./chat";
-import { questionToEditorInitialValue, type Question } from "./questions";
+import {
+  questionToEditorInitialValue,
+  type PublicFollowUp,
+  type PublicQuestion,
+  type Question,
+} from "./questions";
 import type { Snapshot } from "./snapshots";
 // type-import only — adding value imports will create a cycle
 import type { PersistedInterviewSession } from "./interview-session-storage";
@@ -75,15 +80,18 @@ export type SessionState = Readonly<{
   submitReviewHint?: string;
   question: Pick<
     Question,
-    | "id"
-    | "title"
-    | "difficulty"
-    | "candidateDescription"
-    | "interviewerContext"
-    | "testCases"
-    | "entryFunction"
-    | "followUps"
-  >;
+    "id" | "title" | "difficulty" | "candidateDescription" | "testCases" | "entryFunction"
+  > & {
+    /**
+     * Server-only — injected from the question bank inside /api/interviewer and
+     * never supplied by the client (the browser only ever holds a
+     * PublicQuestion). Optional on the wire; the route always fills it before
+     * building the system prompt.
+     */
+    interviewerContext?: string;
+    /** Follow-up variants with hidden test cases stripped (browser-safe). */
+    followUps?: PublicFollowUp[];
+  };
 }>;
 
 // Grounding/execution tools only. There are no control-flow tools: phase is
@@ -96,7 +104,7 @@ export type ToolName =
   | "get_test_results"
   | "run_tests";
 
-export function createSessionState(question: Question): SessionState {
+export function createSessionState(question: PublicQuestion): SessionState {
   return {
     phase: "clarifying",
     editorLocked: true,
@@ -115,7 +123,6 @@ export function createSessionState(question: Question): SessionState {
       title: question.title,
       difficulty: question.difficulty,
       candidateDescription: question.candidateDescription,
-      interviewerContext: question.interviewerContext,
       testCases: question.testCases,
       entryFunction: question.entryFunction,
       followUps: question.followUps,
@@ -125,7 +132,7 @@ export function createSessionState(question: Question): SessionState {
 
 export function restoreSessionState(
   persisted: PersistedInterviewSession,
-  question: Question
+  question: PublicQuestion
 ): SessionState {
   return {
     phase: persisted.sessionPhase,
@@ -151,7 +158,6 @@ export function restoreSessionState(
       title: question.title,
       difficulty: question.difficulty,
       candidateDescription: question.candidateDescription,
-      interviewerContext: question.interviewerContext,
       testCases: question.testCases,
       entryFunction: question.entryFunction,
       followUps: question.followUps,

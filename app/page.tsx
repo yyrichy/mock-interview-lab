@@ -4,11 +4,13 @@ import {
   getAllCompanies,
   getAllDifficulties,
   getAllLabels,
-  getAllQuestions,
+  getAllPublicQuestions,
 } from "@/lib/questions";
 
 export default function Home() {
-  const questions = getAllQuestions().sort(compareQuestions);
+  // Browser-safe questions only — interviewerContext and hiddenTestCases never
+  // cross into the client QuestionBrowser.
+  const questions = getAllPublicQuestions().sort(compareQuestions);
   const allLabels = getAllLabels();
   const allCompanies = getAllCompanies();
   const allDifficulties = getAllDifficulties();

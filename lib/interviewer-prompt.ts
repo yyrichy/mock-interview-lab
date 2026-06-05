@@ -193,7 +193,7 @@ ${state.question.title}
 ${state.question.candidateDescription}
 
 Interviewer reference (server-only — use to answer clarifying questions accurately and to judge approach/follow-ups fairly; never read this aloud, paste it, or volunteer details the candidate did not ask for; do not recite optimal solutions, full test inputs/outputs, or hidden cases unless their question requires it):
-${state.question.interviewerContext}`;
+${state.question.interviewerContext ?? ""}`;
 }
 
 export function buildContextMessages(

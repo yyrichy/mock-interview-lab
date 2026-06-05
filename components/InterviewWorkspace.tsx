@@ -65,7 +65,7 @@ import { getRoundThresholds } from "@/lib/round-config";
 import {
   questionToEditorInitialValue,
   questionToProblemStatement,
-  type Question,
+  type PublicQuestion,
 } from "@/lib/questions";
 import { assistantInvitesCodingWithoutToken } from "@/lib/planning-coding-invite";
 import { buildCodingVoiceReport } from "@/lib/coding-voice-report";
@@ -76,7 +76,7 @@ import {
 } from "@/lib/coding-escalation";
 
 type Props = {
-  question: Question;
+  question: PublicQuestion;
 };
 
 function formatElapsedMs(ms: number): string {
@@ -735,7 +735,6 @@ export function InterviewWorkspace({ question }: Props) {
     question.id,
     sessionResetKey,
     question.candidateDescription,
-    question.interviewerContext,
   ]);
 
   useEffect(() => {
@@ -840,21 +839,22 @@ export function InterviewWorkspace({ question }: Props) {
     );
   }
 
-  function buildTestRunSummary(result: RunCodeResult): TestRunSummary {
+  function buildTestRunSummary(result: RunCodeResult & {
+    hiddenPassedCount?: number;
+    hiddenFailedCount?: number;
+  }): TestRunSummary {
+    const hiddenPassedCount = result.hiddenPassedCount ?? 0;
+    const hiddenFailedCount = result.hiddenFailedCount ?? 0;
     return {
       visiblePassed: result.passed,
       hiddenPassed: result.hiddenPassed,
       passedCount:
-        result.results.filter((r) => r.passed).length +
-        result.hiddenResults.filter((r) => r.passed).length,
+        result.results.filter((r) => r.passed).length + hiddenPassedCount,
       failedCount:
-        result.results.filter((r) => !r.passed).length +
-        result.hiddenResults.filter((r) => !r.passed).length,
-      hiddenFailedCount: result.hiddenResults.filter((r) => !r.passed).length,
-      cases: [
-        ...result.results.map((r) => ({ ...r, hidden: false })),
-        ...result.hiddenResults.map((r) => ({ ...r, hidden: true })),
-      ],
+        result.results.filter((r) => !r.passed).length + hiddenFailedCount,
+      hiddenFailedCount,
+      // Visible cases only — hidden test data never reaches the client.
+      cases: result.results.map((r) => ({ ...r, hidden: false })),
     };
   }
 
@@ -881,7 +881,8 @@ export function InterviewWorkspace({ question }: Props) {
         title: question.title,
         difficulty: question.difficulty,
         candidateDescription: question.candidateDescription,
-        interviewerContext: question.interviewerContext,
+        // interviewerContext is intentionally omitted — the browser never holds
+        // it; /api/interviewer injects it server-side from the question bank.
         testCases: question.testCases,
         entryFunction: question.entryFunction,
         followUps: question.followUps,
@@ -2004,10 +2005,11 @@ export function InterviewWorkspace({ question }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          questionId: question.id,
           code: submittedCode,
-          testCases: question.testCases,
-          hiddenTestCases: question.hiddenTestCases ?? [],
-          entryFunction: question.entryFunction,
+          // Submit grades hidden cases — the route loads them server-side from
+          // the question bank by questionId.
+          includeHidden: true,
         }),
       });
       const data: unknown = await res.json();
@@ -2031,8 +2033,14 @@ export function InterviewWorkspace({ question }: Props) {
         pendingSubmitHintRef.current = null;
         setSubmitOutcome(null);
       } else {
-        const runResult = data as RunCodeResult;
-        const { passed, results, hiddenPassed, hiddenResults } = runResult;
+        // The route returns aggregate counts for hidden cases — never the raw
+        // hiddenResults array (input/expected/actual stay server-side).
+        const runResult = data as RunCodeResult & {
+          hiddenPassedCount?: number;
+          hiddenFailedCount?: number;
+          failedHiddenDescriptions?: string[];
+        };
+        const { passed, results, hiddenPassed } = runResult;
         lastTestResultRef.current = buildTestRunSummary(runResult);
         setTestResults(results);
         setTestAllPassed(passed);
@@ -2058,23 +2066,22 @@ export function InterviewWorkspace({ question }: Props) {
         }
 
         const visiblePassedCount = results.filter((r) => r.passed).length;
-        const hiddenPassedCount = hiddenResults.filter((r) => r.passed).length;
-        const failedHiddenDescriptions = (question.hiddenTestCases ?? [])
-          .filter(
-            (_, i) => i < hiddenResults.length && !hiddenResults[i].passed
-          )
-          .map((tc) => tc.description)
-          .filter((d): d is string => typeof d === "string");
+        const hiddenPassedCount = runResult.hiddenPassedCount ?? 0;
+        const hiddenFailedCount = runResult.hiddenFailedCount ?? 0;
+        const hiddenTotal = hiddenPassedCount + hiddenFailedCount;
+        // Descriptions of failed hidden cases come from the server response —
+        // the browser no longer holds the hidden test cases themselves.
+        const failedHiddenDescriptions = runResult.failedHiddenDescriptions ?? [];
         pendingSubmitHintRef.current = buildSubmitReviewHint({
           visiblePassed: passed,
           hiddenPassed,
           visiblePassedCount,
           visibleTotal: results.length,
           hiddenPassedCount,
-          hiddenTotal: hiddenResults.length,
+          hiddenTotal,
           failedHiddenDescriptions,
         });
-        const countsLabel = `visible ${visiblePassedCount}/${results.length}, hidden ${hiddenPassedCount}/${hiddenResults.length}`;
+        const countsLabel = `visible ${visiblePassedCount}/${results.length}, hidden ${hiddenPassedCount}/${hiddenTotal}`;
         setSubmitOutcome(`Submitted — ${countsLabel}`);
         // Remember this graded submission (pass OR fail) so an unchanged
         // re-submit short-circuits instead of re-reviewing.
@@ -2243,12 +2250,11 @@ export function InterviewWorkspace({ question }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          questionId: question.id,
           code: codeRef.current,
-          testCases: question.testCases,
           // Visible-only: a Run never executes hidden cases. Hidden grading is
           // reserved for Submit.
-          hiddenTestCases: [],
-          entryFunction: question.entryFunction,
+          includeHidden: false,
         }),
       });
       const data: unknown = await res.json();
