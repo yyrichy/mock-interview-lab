@@ -1,8 +1,8 @@
 /**
- * Speech: Groq Whisper transcription + ElevenLabs text-to-speech.
+ * Speech: OpenAI Whisper transcription + ElevenLabs text-to-speech.
  *
  * Web Speech API and local @xenova/transformers Whisper were removed —
- * the round-trip to Groq is more reliable and works the same across browsers.
+ * the server round-trip is more reliable and works the same across browsers.
  */
 import { loadProviderKeys } from "@/lib/byok";
 
@@ -97,7 +97,11 @@ export function isMediaRecorderCaptureSupported(): boolean {
   );
 }
 
-/** Transcribe audio via Groq Whisper API (server-side, requires GROQ_API_KEY). */
+/**
+ * Transcribe audio via /api/transcribe (OpenAI Whisper server-side; uses
+ * OPENAI_API_KEY env, or a BYOK OpenAI key forwarded below). Name kept for the
+ * existing callers — the swap to OpenAI is transparent to them.
+ */
 export async function transcribeWithGroqWhisper(blob: Blob): Promise<string> {
   if (blob.size < 256) {
     return "";
@@ -108,8 +112,8 @@ export async function transcribeWithGroqWhisper(blob: Blob): Promise<string> {
 
   const headers: Record<string, string> = {};
   const keys = loadProviderKeys();
-  if (keys.groq) {
-    headers["x-provider-key"] = keys.groq;
+  if (keys.openai) {
+    headers["x-provider-key"] = keys.openai;
   }
 
   const res = await fetch("/api/transcribe", {

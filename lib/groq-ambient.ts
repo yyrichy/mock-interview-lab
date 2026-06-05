@@ -45,9 +45,10 @@ export interface GroqAmbientHandle {
 }
 
 /**
- * Start continuous ambient recording that sends 30-second audio chunks to Groq Whisper.
- * Each chunk is transcribed in the background; results are delivered via `onTranscript`.
- * Returns null if the user denies microphone access.
+ * Start continuous ambient recording that sends 30-second audio chunks to
+ * /api/transcribe (OpenAI Whisper server-side). Each chunk is transcribed in the
+ * background; results are delivered via `onTranscript`. Returns null if the user
+ * denies microphone access.
  */
 export async function startGroqAmbientRecording(
   onTranscript: (text: string) => void,
@@ -63,7 +64,9 @@ export async function startGroqAmbientRecording(
   }
 
   const mime = pickMimeType();
-  const apiKey = loadProviderKeys().groq ?? "";
+  // BYOK OpenAI key for transcription (matches /api/transcribe + the focus-mic
+  // path). Empty when unset → the route falls back to the OPENAI_API_KEY env.
+  const apiKey = loadProviderKeys().openai ?? "";
 
   let recorder: MediaRecorder | null = null;
   let chunks: BlobPart[] = [];

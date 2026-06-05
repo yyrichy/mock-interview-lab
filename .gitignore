@@ -43,3 +43,5 @@ next-env.d.ts
 *.md
 /docs
 /data
+
+.claude/settings.local.json
