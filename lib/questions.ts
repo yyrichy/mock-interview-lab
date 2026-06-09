@@ -1,4 +1,4 @@
-import questionsData from "@/data/questions.json";
+import questionsData from "@/data/questions.demo.json";
 import type { HiddenTestCase } from "@/lib/judge0";
 
 export type FollowUp = {

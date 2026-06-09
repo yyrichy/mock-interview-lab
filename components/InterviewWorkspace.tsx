@@ -1577,12 +1577,19 @@ export function InterviewWorkspace({ question }: Props) {
           ? FOLLOW_UP_SLICE_SAFETY_CAP
           : FOLLOW_UP_SAFETY_CAP;
         const hitSafety = turns >= cap;
-        if (outOfTime || hitSafety) {
-          // Backstop only — the model normally drives the transition with
-          // [segment-complete]. If it hasn't wrapped within the cap, or time is
-          // nearly up, force the segment forward (advanceAfterSegmentComplete
-          // routes a slice review → next variant / final, and final → feedback).
+        if (outOfTime) {
           pendingSegmentAdvanceRef.current = true;
+        } else if (hitSafety) {
+          if (sliceSegment) {
+            // Slice review: seal chat so the candidate focuses on editing and
+            // resubmitting. Do NOT force segment advance — only a real
+            // [segment-complete] from a subsequent review should introduce the
+            // next variant. enterSubmitReview resets the sealed state.
+            followUpSealedRef.current = true;
+            setFollowUpSealed(true);
+          } else {
+            pendingSegmentAdvanceRef.current = true;
+          }
         }
       }
       if (
