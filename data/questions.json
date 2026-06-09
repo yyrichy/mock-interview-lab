@@ -25,7 +25,7 @@
     "followUps": [
       {
         "id": "two-sum-sorted",
-        "prompt": "Good. Now suppose the input array is guaranteed to be sorted in ascending order. Can you solve it in O(1) extra space instead of using a hash map?",
+        "prompt": "Now suppose the input array is guaranteed to be sorted in ascending order. Solve it using O(1) extra space.",
         "expectedMinutes": 8
       }
     ]
@@ -56,7 +56,7 @@
     "followUps": [
       {
         "id": "anagram-unicode",
-        "prompt": "Good. What if the strings could contain any Unicode characters — not just lowercase ASCII? Does your current solution still work, and is there anything you'd change?",
+        "prompt": "Now suppose the strings can contain any Unicode characters — not just lowercase ASCII. Make your solution handle that correctly.",
         "expectedMinutes": 5
       }
     ]
@@ -110,7 +110,7 @@
     "followUps": [
       {
         "id": "stock-ii-multiple",
-        "prompt": "Nice. Now suppose you can buy and sell as many times as you want, but you can only hold one share at a time. What's the maximum profit, and why?",
+        "prompt": "Now suppose you can buy and sell as many times as you want, but you can only hold one share at a time. Return the maximum total profit.",
         "expectedMinutes": 8
       }
     ]
@@ -240,7 +240,7 @@
     "followUps": [
       {
         "id": "reverse-recursive",
-        "prompt": "Solid. Now do it recursively. Walk me through the base case, the recursive step, and the stack depth.",
+        "prompt": "Now do it recursively instead of iteratively.",
         "expectedMinutes": 6
       }
     ]
@@ -295,7 +295,7 @@
     "followUps": [
       {
         "id": "binary-search-leftmost",
-        "prompt": "Good. Now suppose nums may contain duplicates — still sorted ascending. Return the leftmost index where nums[i] == target, or -1 if target is absent. Still O(log n). What changes in your loop when you find a match?",
+        "prompt": "Now suppose nums may contain duplicates — still sorted ascending. Return the leftmost index where nums[i] == target, or -1 if target is absent. Still O(log n).",
         "expectedMinutes": 8
       }
     ]
@@ -425,7 +425,7 @@
     "followUps": [
       {
         "id": "at-most-k-distinct",
-        "prompt": "Solid. Now generalize it: given a string and an integer k, return the length of the longest substring containing at most k distinct characters. Your sliding window is already close — walk me through the change.",
+        "prompt": "Now generalize it: given a string and an integer k, return the length of the longest substring containing at most k distinct characters.",
         "expectedMinutes": 10
       }
     ]
@@ -480,7 +480,7 @@
     "followUps": [
       {
         "id": "course-schedule-ii",
-        "prompt": "Nice. The follow-on is: return one valid ordering of all course numbers (a list of length num_courses) that respects every prerequisite, or an empty list if it is impossible. How would you adapt your approach?",
+        "prompt": "Now return one valid ordering of all course numbers that respects every prerequisite, or an empty list if it is impossible.",
         "expectedMinutes": 10
       }
     ]
@@ -629,7 +629,7 @@
     "followUps": [
       {
         "id": "number-of-islands-union-find",
-        "prompt": "Nice. Now imagine the grid is being streamed in and you're told 'land cell created at (r,c)' one at a time. After each update, return the current number of islands. What data structure do you reach for?",
+        "prompt": "Now imagine the grid is being streamed in and you're told 'land cell created at (r,c)' one at a time. After each update, return the current number of islands.",
         "expectedMinutes": 10
       }
     ]
@@ -710,7 +710,7 @@
     "followUps": [
       {
         "id": "house-robber-ii",
-        "prompt": "Good. Now suppose the houses are arranged in a circle — the first and last houses are also adjacent. How does that change your DP?",
+        "prompt": "Now suppose the houses are arranged in a circle — the first and last houses are also adjacent. Return the maximum amount you can rob.",
         "expectedMinutes": 8
       }
     ]

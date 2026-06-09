@@ -6,7 +6,8 @@
       "Bash(npm run *)",
       "Bash(npx tsc *)",
       "Bash(node -e \"console.log\\(new Date\\(\\).toISOString\\(\\)\\)\")",
-      "Bash(npm view *)"
+      "Bash(npm view *)",
+      "Bash(npx eslint *)"
     ]
   }
 }

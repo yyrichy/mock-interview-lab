@@ -1579,17 +1579,12 @@ export function InterviewWorkspace({ question }: Props) {
         const hitSafety = turns >= cap;
         if (outOfTime) {
           pendingSegmentAdvanceRef.current = true;
-        } else if (hitSafety) {
-          if (sliceSegment) {
-            // Slice review: seal chat so the candidate focuses on editing and
-            // resubmitting. Do NOT force segment advance — only a real
-            // [segment-complete] from a subsequent review should introduce the
-            // next variant. enterSubmitReview resets the sealed state.
-            followUpSealedRef.current = true;
-            setFollowUpSealed(true);
-          } else {
-            pendingSegmentAdvanceRef.current = true;
-          }
+        } else if (hitSafety && !sliceSegment) {
+          // Final Q&A cap: force advance. Slice reviews are exempt — only a
+          // real [segment-complete] or outOfTime should advance them. The
+          // round timer (FOLLOW_UP_AUTO_CLOSE_REMAINING_MS) backstops a
+          // model that never wraps.
+          pendingSegmentAdvanceRef.current = true;
         }
       }
       if (

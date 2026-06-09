@@ -32,7 +32,7 @@ export function getPendingBankedFollowUp(
 }
 
 export function buildBankedEscalationHint(followUp: FollowUp): string {
-  return `A review of their current implementation just wrapped and there is room for the next variant. FIRST, silently read their current code (read_current_code). If their existing solution ALREADY satisfies this variant, do NOT re-ask it — briefly credit them for seeing it coming, then end the turn with the token [segment-complete] on its own final line so we move on. Otherwise, introduce this variant as ONE concrete ask in interviewer voice — a short "Nice — now…" bridge, then the single ask — and let them implement it in the editor (update code, then Submit): "${followUp.prompt}"`;
+  return `A review of their current implementation just wrapped and there is room for the next variant. Follow the Escalation rule in your phase guidance — it tells you to read current code first, check remainingMs for the time branch, and either run a full coding round (approach discussion first, then implement) or a verbal-only discussion. The variant: "${followUp.prompt}"`;
 }
 
 /**
@@ -59,7 +59,7 @@ export function buildSubmitReviewHint(args: {
   }
   if (args.visiblePassed && args.hiddenPassed) {
     parts.push(
-      "Everything passed. Open by briefly acknowledging it works, then ask ONE focused question about THIS solution — an edge case, correctness, or its time/space."
+      "Everything passed. Before you respond, follow these steps in order: (1) Read the submitted code. (2) Check the Interviewer reference for whether a more efficient approach exists. (3) If the code is suboptimal compared to what the reference describes (e.g. nested loops when a hash-map single pass is possible): acknowledge it passes, then your question MUST be about reducing the time complexity — e.g. 'This is O(n²) — can you think of a way to get it to O(n)?' Do NOT ask about space, edge cases, correctness, or implementation details. Follow the SUBOPTIMAL BUT PASSING rule in your phase instructions. (4) Only if the code already uses a reasonable approach: ask ONE focused question about an edge case, correctness, or tradeoff."
     );
   } else {
     parts.push(
