@@ -113,7 +113,10 @@ const PHASE_RULES: Record<SessionPhase, string> = {
 - One focused question per reply. Calibrate difficulty to the problem and to how the candidate is doing.
 - Stay in the same problem family — edge cases, complexity of their approach, invariants. Do NOT string unrelated system-design / distributed / streaming / thread-safety questions onto an unrelated baseline.
 - De-escalate if they say "not sure" or give short evasive answers: rephrase more simply, offer a one-sentence hint, or a smaller sub-question. Never stack a harder topic on a failed one.
-- Closing — IMPORTANT: only when the current solution is actually correct (its submit passed, or you are satisfied with what they have) AND you have covered what you need, wrap the thread in 1–2 sentences with no new question, then end your reply with the token [segment-complete] on its own final line. Keep the wrap in natural interviewer voice — "Okay, that works." / "Good, I'm happy with that." — never "that covers what I needed on this version" or any mention of versions/segments. The token (stripped before the candidate sees it) is what moves the interview forward. Emit it exactly once, only when you are genuinely done — NEVER while a submission is still failing. Do NOT mention feedback, buttons, the app, or what comes next, and never write the feedback yourself.
+- Closing — IMPORTANT: only when the current solution is actually correct (its submit passed, or you are satisfied with what they have) AND you have covered what you need, wrap the thread in 1–2 sentences with no new question, then end your reply with the token [segment-complete] on its own final line. The prose and the token ALWAYS travel together — a complete wrap turn looks exactly like:
+  Okay, that works.
+  [segment-complete]
+  Never send a closing line without the token (the interview stalls waiting for it), and never send the token alone without at least one closing sentence before it. Keep the wrap in natural interviewer voice — "Okay, that works." / "Good, I'm happy with that." — never "that covers what I needed on this version" or any mention of versions/segments. The token (stripped before the candidate sees it) is what moves the interview forward. Emit it exactly once, only when you are genuinely done — NEVER while a submission is still failing. Do NOT mention feedback, buttons, the app, or what comes next, and never write the feedback yourself.
 - Every turn MUST end with at least one sentence of natural speech to the candidate. Calling tools alone (reading code, running tests) is not a complete reply — speak after. Never mention tool names or say you are fetching state.`,
 
   // The model is never invoked with phase: "feedback" — the written scorecard is
@@ -162,7 +165,7 @@ export function buildSystemPrompt(state: SessionState): string {
     }
     if (state.followUpSegment === "slice") {
       extras.push(
-        "- This is a focused review of the code they just submitted, not the final wrap. Keep it TIGHTLY scoped. If the submission PASSED: ask at most ONE focused question and WAIT for the answer — do NOT also emit [segment-complete] on the turn you ask it. Only after they respond, wrap on a separate turn (no new question) with [segment-complete]. Do NOT open a follow-up ladder or keep hunting for more edge cases on a solution that already passed. If it FAILED: name the failing behaviour and keep them fixing and re-submitting; do NOT close while it is still failing."
+        "- This is a focused review of the code they just submitted, not the final wrap. Keep it TIGHTLY scoped. If the submission PASSED: ask at most ONE focused question and WAIT for the answer — do NOT also emit [segment-complete] on the turn you ask it. Only after they respond, wrap on a separate turn (no new question) with [segment-complete] — one closing sentence plus the token, never one without the other. Do NOT open a follow-up ladder or keep hunting for more edge cases on a solution that already passed. If it FAILED: name the failing behaviour and keep them fixing and re-submitting; do NOT close while it is still failing."
       );
     }
     if (extras.length > 0) {
@@ -208,7 +211,8 @@ ${state.question.interviewerContext ?? ""}`;
 
 export function buildContextMessages(
   rollingSummary: string,
-  recentMessages: ChatMessage[]
+  recentMessages: ChatMessage[],
+  escalationHint?: string | null
 ): Array<{ role: "user" | "assistant"; content: string }> {
   const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
   if (rollingSummary.trim().length > 0) {
@@ -226,6 +230,18 @@ export function buildContextMessages(
     content: m.content,
   }));
   const result = [...messages, ...recent];
+  // The escalation HINT also rides the system prompt, but a model's strongest
+  // instinct is to answer the LAST message — and on the app-fired variant turn
+  // the history can end with a dangling candidate remark (e.g. "ok is that it")
+  // when the preceding wrap was token-only and dropped. Appending the hint as
+  // the final user-role control note wins that recency race so the variant
+  // introduction actually happens instead of a one-word answer to the remark.
+  if (typeof escalationHint === "string" && escalationHint.trim().length > 0) {
+    result.push({
+      role: "user",
+      content: `[Interview control note — the candidate did not write this and never sees it. If their last message contains an unanswered remark, close it out in a few words, then in the SAME reply follow the Escalation rule in your phase guidance for this hint: ${escalationHint.trim()}]`,
+    });
+  }
   if (result.length === 0) {
     return [{ role: "user" as const, content: "Begin the interview." }];
   }

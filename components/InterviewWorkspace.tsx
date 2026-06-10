@@ -316,6 +316,12 @@ export function InterviewWorkspace({ question }: Props) {
   // True when the queued proactive nudge is introducing a banked variant (drives
   // the follow-up-count increment on success).
   const pendingProactiveBankedRef = useRef(false);
+  // Index to commit as currentFollowUpIndex once the queued banked variant is
+  // actually DELIVERED (its nudge stream completes). Committing at delivery —
+  // not at scheduling — means a failed or guard-skipped nudge leaves the
+  // variant pending, so the next advance retries it instead of silently
+  // burning it and skipping to final Q&A.
+  const pendingProactiveBankedNextIndexRef = useRef<number | null>(null);
   const [forcedWrap, setForcedWrap] = useState(false);
   const forcedWrapRef = useRef(false);
   const forcedWrapHintPendingRef = useRef(false);
@@ -1044,9 +1050,9 @@ export function InterviewWorkspace({ question }: Props) {
     if (pending === null) {
       return false;
     }
-    const nextIndex = pending.index + 1;
-    currentFollowUpIndexRef.current = nextIndex;
-    setCurrentFollowUpIndex(nextIndex);
+    // The index advance is staged here and committed by runCodingEscalationNudge
+    // only after the introduction turn actually completes.
+    pendingProactiveBankedNextIndexRef.current = pending.index + 1;
     pendingProactiveEscalationHintRef.current = buildBankedEscalationHint(
       pending.followUp
     );
@@ -1093,6 +1099,8 @@ export function InterviewWorkspace({ question }: Props) {
     pendingProactiveEscalationHintRef.current = null;
     const wasBanked = pendingProactiveBankedRef.current;
     pendingProactiveBankedRef.current = false;
+    const bankedNextIndex = pendingProactiveBankedNextIndexRef.current;
+    pendingProactiveBankedNextIndexRef.current = null;
 
     const myGen = ++escalationNudgeGenRef.current;
     const assistantId = crypto.randomUUID();
@@ -1178,6 +1186,14 @@ export function InterviewWorkspace({ question }: Props) {
         if (streamOk) {
           codingEscalationStepRef.current += 1;
           if (wasBanked) {
+            // Variant delivered (introduced, or pre-solve-skipped via
+            // [segment-complete]) — commit the staged index so this variant is
+            // consumed. A failed stream skips this, leaving it pending for the
+            // next advance to retry.
+            if (bankedNextIndex !== null) {
+              currentFollowUpIndexRef.current = bankedNextIndex;
+              setCurrentFollowUpIndex(bankedNextIndex);
+            }
             const next = followUpsReachedCountRef.current + 1;
             if (next > FOLLOW_UP_SAFETY_CAP) {
               if (process.env.NODE_ENV === "development") {
@@ -2346,6 +2362,7 @@ export function InterviewWorkspace({ question }: Props) {
     lastSubmitOutcomeRef.current = null;
     pendingProactiveEscalationHintRef.current = null;
     pendingProactiveBankedRef.current = false;
+    pendingProactiveBankedNextIndexRef.current = null;
     pendingSegmentAdvanceRef.current = false;
     streamingAssistantIdRef.current = null;
     setStreamingAssistantId(null);
