@@ -5,6 +5,9 @@ import type {
   TranscriptEntry,
 } from "@/lib/chat";
 import type { TestResult } from "@/lib/judge0";
+// type-import only — session-state type-imports this module back; a value
+// import would create a runtime cycle.
+import type { ActiveFollowUp } from "@/lib/session-state";
 import type { Snapshot } from "@/lib/snapshots";
 
 const STORAGE_VERSION = 1 as const;
@@ -31,7 +34,8 @@ export type PersistedInterviewSession = {
   followUpSealed: boolean;
   forcedWrap: boolean;
   roundTimedOut: boolean;
-  rollingContext: string | null;
+  /** The follow-up variant in progress at save time, so a reload mid-variant keeps task identity. */
+  activeFollowUp: ActiveFollowUp | null;
   baselineSolvedAt: number | null;
   codingEscalationStep: number;
   bruteForceSkipped: boolean;
@@ -88,6 +92,18 @@ function isTestResult(v: unknown): v is TestResult {
     typeof o.expected === "string" &&
     typeof o.actual === "string" &&
     typeof o.passed === "boolean"
+  );
+}
+
+function isActiveFollowUp(v: unknown): v is ActiveFollowUp {
+  if (typeof v !== "object" || v === null) {
+    return false;
+  }
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.index === "number" &&
+    typeof o.prompt === "string" &&
+    (o.mode === "code" || o.mode === "verbal")
   );
 }
 
@@ -180,8 +196,9 @@ export function parsePersistedInterviewSession(
     followUpSealed: o.followUpSealed === true,
     forcedWrap: o.forcedWrap === true,
     roundTimedOut: o.roundTimedOut === true,
-    rollingContext:
-      typeof o.rollingContext === "string" ? o.rollingContext : null,
+    activeFollowUp: isActiveFollowUp(o.activeFollowUp)
+      ? o.activeFollowUp
+      : null,
     baselineSolvedAt:
       typeof o.baselineSolvedAt === "number" ? o.baselineSolvedAt : null,
     codingEscalationStep:

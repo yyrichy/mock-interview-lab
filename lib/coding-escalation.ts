@@ -31,8 +31,15 @@ export function getPendingBankedFollowUp(
   return { followUp, index: currentIndex };
 }
 
-export function buildBankedEscalationHint(followUp: FollowUp): string {
-  return `A review of their current implementation just wrapped and there is room for the next variant. Follow the Escalation rule in your phase guidance — it tells you to read current code first, check remainingMs for the time branch, and either run a full coding round (approach discussion first, then implement) or a verbal-only discussion. The variant: "${followUp.prompt}"`;
+export function buildBankedEscalationHint(
+  followUp: FollowUp,
+  mode: "code" | "verbal"
+): string {
+  const format =
+    mode === "code"
+      ? "Format: FULL CODING ROUND — introduce it, then run the approach discussion first; implementation comes after they state a sound approach."
+      : "Format: VERBAL ONLY — introduce it and discuss the approach; never ask them to implement it.";
+  return `A review of their current implementation just wrapped and there is room for the next variant. Follow the Escalation rule in your phase guidance — read their current code first (skip the variant if it is already satisfied). ${format} The variant: "${followUp.prompt}"`;
 }
 
 /**

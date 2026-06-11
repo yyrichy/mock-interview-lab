@@ -17,7 +17,11 @@ import {
   streamInterviewerApi,
   type InterviewerDataEvent,
 } from "@/lib/ai-client";
-import type { SessionState, TestRunSummary } from "@/lib/session-state";
+import type {
+  ActiveFollowUp,
+  SessionState,
+  TestRunSummary,
+} from "@/lib/session-state";
 import {
   AI_MODEL_PRESET_STORAGE_KEY,
   DEFAULT_AI_MODEL_PRESET_ID,
@@ -52,6 +56,7 @@ import type { TestResult, RunCodeResult } from "@/lib/judge0";
 import {
   FOLLOW_UP_AUTO_CLOSE_REMAINING_MS,
   FOLLOW_UP_SLICE_SAFETY_CAP,
+  FOLLOW_UP_VARIANT_FULL_ROUND_MIN_REMAINING_MS,
 } from "@/lib/follow-up-config";
 import {
   FOLLOW_UP_SAFETY_CAP,
@@ -188,7 +193,7 @@ export function InterviewWorkspace({ question }: Props) {
     followUpSealed: false,
     forcedWrap: false,
     roundTimedOut: false,
-    rollingContext: null,
+    activeFollowUp: null,
     baselineSolvedAt: null,
     codingEscalationStep: 0,
     bruteForceSkipped: false,
@@ -284,7 +289,6 @@ export function InterviewWorkspace({ question }: Props) {
   const testRunLoadingRef = useRef(false);
   const handleRunTestsRef = useRef(() => {});
   const handleSubmitRef = useRef(() => {});
-  const rollingContextRef = useRef<string | null>(null);
   // Set before each agent stream begins so the shared onData handler
   // (handleAgentDataEvent) can append error events to the currently-streaming
   // assistant bubble across all migrated call sites.
@@ -316,12 +320,22 @@ export function InterviewWorkspace({ question }: Props) {
   // True when the queued proactive nudge is introducing a banked variant (drives
   // the follow-up-count increment on success).
   const pendingProactiveBankedRef = useRef(false);
-  // Index to commit as currentFollowUpIndex once the queued banked variant is
-  // actually DELIVERED (its nudge stream completes). Committing at delivery —
+  // Staged commit for the queued banked variant, applied only once the nudge
+  // stream that introduces it actually completes. Committing at delivery —
   // not at scheduling — means a failed or guard-skipped nudge leaves the
   // variant pending, so the next advance retries it instead of silently
-  // burning it and skipping to final Q&A.
-  const pendingProactiveBankedNextIndexRef = useRef<number | null>(null);
+  // burning it and skipping to final Q&A. Carries the next
+  // currentFollowUpIndex plus the ActiveFollowUp (prompt + app-decided mode)
+  // that becomes the durable task identity on delivery.
+  const pendingProactiveBankedCommitRef = useRef<{
+    nextIndex: number;
+    active: ActiveFollowUp;
+  } | null>(null);
+  // The variant the candidate is actively working on. Sent on every turn's
+  // SessionState so the model never loses track of which task the conversation
+  // is about. Set at nudge delivery, cleared when the variant's segment wraps
+  // (advanceAfterSegmentComplete) and on reset.
+  const activeFollowUpRef = useRef<ActiveFollowUp | null>(null);
   const [forcedWrap, setForcedWrap] = useState(false);
   const forcedWrapRef = useRef(false);
   const forcedWrapHintPendingRef = useRef(false);
@@ -396,7 +410,7 @@ export function InterviewWorkspace({ question }: Props) {
         followUpSegmentRef.current = "final";
       }
       roundTimedOutRef.current = saved.roundTimedOut;
-      rollingContextRef.current = saved.rollingContext;
+      activeFollowUpRef.current = saved.activeFollowUp;
       baselineSolvedAtRef.current = saved.baselineSolvedAt;
       codingEscalationStepRef.current = saved.codingEscalationStep;
       bruteForceSkippedRef.current = saved.bruteForceSkipped;
@@ -459,7 +473,7 @@ export function InterviewWorkspace({ question }: Props) {
       followUpSealed: followUpSealedRef.current,
       forcedWrap: forcedWrapRef.current,
       roundTimedOut: roundTimedOutRef.current,
-      rollingContext: rollingContextRef.current,
+      activeFollowUp: activeFollowUpRef.current,
       baselineSolvedAt: baselineSolvedAtRef.current,
       codingEscalationStep: codingEscalationStepRef.current,
       bruteForceSkipped: bruteForceSkippedRef.current,
@@ -698,7 +712,6 @@ export function InterviewWorkspace({ question }: Props) {
           {
             sessionState: buildCurrentSessionState(),
             messages: [],
-            rollingSummary: "",
             transcript: transcriptRef.current,
             turnCount: 0,
             modelPresetId: modelPresetIdRef.current,
@@ -882,6 +895,7 @@ export function InterviewWorkspace({ question }: Props) {
       transcript: transcriptRef.current,
       forcedWrap: forcedWrapRef.current,
       followUpSegment: followUpSegmentRef.current,
+      activeFollowUp: activeFollowUpRef.current,
       question: {
         id: question.id,
         title: question.title,
@@ -900,12 +914,6 @@ export function InterviewWorkspace({ question }: Props) {
     event: InterviewerDataEvent,
     assistantId?: string
   ): void {
-    if (event.type === "summary") {
-      if (event.value.trim().length >= 30) {
-        rollingContextRef.current = event.value;
-      }
-      return;
-    }
     if (event.type === "error") {
       // Route to this stream's own bubble; fall back to the shared ref for any
       // call site that hasn't bound an id.
@@ -1041,20 +1049,32 @@ export function InterviewWorkspace({ question }: Props) {
     if (baselineSolvedAtRef.current === null) {
       return false;
     }
+    const remainingMs = getRemainingRoundMsNow();
     const pending = getPendingBankedFollowUp(
       question.followUps,
       currentFollowUpIndexRef.current,
       baselineSolvedAtRef.current,
-      getRemainingRoundMsNow()
+      remainingMs
     );
     if (pending === null) {
       return false;
     }
-    // The index advance is staged here and committed by runCodingEscalationNudge
-    // only after the introduction turn actually completes.
-    pendingProactiveBankedNextIndexRef.current = pending.index + 1;
+    // The app — owner of the clock — decides here whether the variant runs as
+    // a full mini coding round or a verbal-only discussion. The model is told
+    // the format; it never reads remainingMs to pick one.
+    const mode: ActiveFollowUp["mode"] =
+      remainingMs > FOLLOW_UP_VARIANT_FULL_ROUND_MIN_REMAINING_MS
+        ? "code"
+        : "verbal";
+    // The index advance + active-task identity are staged here and committed by
+    // runCodingEscalationNudge only after the introduction turn actually completes.
+    pendingProactiveBankedCommitRef.current = {
+      nextIndex: pending.index + 1,
+      active: { index: pending.index, prompt: pending.followUp.prompt, mode },
+    };
     pendingProactiveEscalationHintRef.current = buildBankedEscalationHint(
-      pending.followUp
+      pending.followUp,
+      mode
     );
     pendingProactiveBankedRef.current = true;
     queueMicrotask(() => {
@@ -1099,8 +1119,8 @@ export function InterviewWorkspace({ question }: Props) {
     pendingProactiveEscalationHintRef.current = null;
     const wasBanked = pendingProactiveBankedRef.current;
     pendingProactiveBankedRef.current = false;
-    const bankedNextIndex = pendingProactiveBankedNextIndexRef.current;
-    pendingProactiveBankedNextIndexRef.current = null;
+    const bankedCommit = pendingProactiveBankedCommitRef.current;
+    pendingProactiveBankedCommitRef.current = null;
 
     const myGen = ++escalationNudgeGenRef.current;
     const assistantId = crypto.randomUUID();
@@ -1130,7 +1150,6 @@ export function InterviewWorkspace({ question }: Props) {
         {
           sessionState: escalationState,
           messages: msgsForNudge,
-          rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
           turnCount: Math.floor(msgsForNudge.length / 2),
           modelPresetId: modelPresetIdRef.current,
@@ -1190,9 +1209,16 @@ export function InterviewWorkspace({ question }: Props) {
             // [segment-complete]) — commit the staged index so this variant is
             // consumed. A failed stream skips this, leaving it pending for the
             // next advance to retry.
-            if (bankedNextIndex !== null) {
-              currentFollowUpIndexRef.current = bankedNextIndex;
-              setCurrentFollowUpIndex(bankedNextIndex);
+            if (bankedCommit !== null) {
+              currentFollowUpIndexRef.current = bankedCommit.nextIndex;
+              setCurrentFollowUpIndex(bankedCommit.nextIndex);
+              // Durable task identity: from this turn on, every SessionState
+              // names this variant as the active task. Skipped when the model
+              // pre-solve-skipped it ([segment-complete] on the intro turn) —
+              // the segment is already over and the advance is queued.
+              if (!segmentWrapped) {
+                activeFollowUpRef.current = bankedCommit.active;
+              }
             }
             const next = followUpsReachedCountRef.current + 1;
             if (next > FOLLOW_UP_SAFETY_CAP) {
@@ -1268,7 +1294,6 @@ export function InterviewWorkspace({ question }: Props) {
         {
           sessionState: buildCurrentSessionState(),
           messages: historyForApi,
-          rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
           turnCount: Math.floor(historyForApi.length / 2),
           modelPresetId: modelPresetIdRef.current,
@@ -1410,7 +1435,6 @@ export function InterviewWorkspace({ question }: Props) {
         {
           sessionState: buildCurrentSessionState(),
           messages: msgsForApi,
-          rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
           turnCount: Math.floor(msgsForApi.length / 2),
           modelPresetId: modelPresetIdRef.current,
@@ -1732,7 +1756,6 @@ export function InterviewWorkspace({ question }: Props) {
         {
           sessionState: reviewState,
           messages: historyForApi,
-          rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
           turnCount: Math.floor(historyForApi.length / 2),
           modelPresetId: modelPresetIdRef.current,
@@ -1826,7 +1849,6 @@ export function InterviewWorkspace({ question }: Props) {
         {
           sessionState: buildCurrentSessionState(),
           messages: historyForApi,
-          rollingSummary: rollingContextRef.current ?? "",
           transcript: transcriptRef.current,
           turnCount: Math.floor(historyForApi.length / 2),
           modelPresetId: modelPresetIdRef.current,
@@ -1947,7 +1969,12 @@ export function InterviewWorkspace({ question }: Props) {
       return;
     }
 
-    // Baseline solved → advance: next banked variant if one fits, else final Q&A.
+    // Baseline solved → the segment that just wrapped is over, so whatever
+    // variant it was about is no longer the active task. The next delivery
+    // re-sets it; final Q&A runs with no active variant.
+    activeFollowUpRef.current = null;
+
+    // Advance: next banked variant if one fits, else final Q&A.
     const pending = getPendingBankedFollowUp(
       question.followUps,
       currentFollowUpIndexRef.current,
@@ -2353,7 +2380,6 @@ export function InterviewWorkspace({ question }: Props) {
     phaseStartTimeRef.current = null;
     setPhaseStartTime(null);
     phaseBudgetNudgedRef.current = {};
-    rollingContextRef.current = null;
     runCountRef.current = 0;
     setRunCount(0);
     setSubmitOutcome(null);
@@ -2362,7 +2388,8 @@ export function InterviewWorkspace({ question }: Props) {
     lastSubmitOutcomeRef.current = null;
     pendingProactiveEscalationHintRef.current = null;
     pendingProactiveBankedRef.current = false;
-    pendingProactiveBankedNextIndexRef.current = null;
+    pendingProactiveBankedCommitRef.current = null;
+    activeFollowUpRef.current = null;
     pendingSegmentAdvanceRef.current = false;
     streamingAssistantIdRef.current = null;
     setStreamingAssistantId(null);

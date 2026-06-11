@@ -91,13 +91,12 @@ export async function* streamFeedbackApi(
 }
 
 export type InterviewerDataEvent =
-  | { type: "summary"; value: string }
   | { type: "error"; message: string }
   | { type: "tool_result"; tool: string; result: unknown };
 
 /**
  * POST /api/interviewer and yield text chunks from the Vercel AI SDK data
- * stream. Non-text events (summary, error) are surfaced via `onData`.
+ * stream. Non-text events (error, tool_result) are surfaced via `onData`.
  *
  * Forwards the BYOK key for the preset's provider via `x-provider-key` (same
  * pattern as streamFeedbackApi). The server re-validates the key prefix against the
@@ -107,7 +106,6 @@ export async function* streamInterviewerApi(
   body: {
     sessionState: SessionState;
     messages: ChatMessage[];
-    rollingSummary: string;
     transcript: TranscriptEntry[];
     turnCount: number;
     modelPresetId: string;
@@ -171,7 +169,7 @@ export async function* streamInterviewerApi(
   // v6 wire format: SSE. Each event is `data: <JSON UIMessageChunk>\n\n`.
   // Text is delivered as `text-delta` chunks between `text-start`/`text-end`.
   // Custom server-side data parts are `{ type: "data-<name>", data: {...} }`
-  // — our server emits `data-error`, `data-summary`, and `data-tool_result`.
+  // — our server emits `data-error` and `data-tool_result`.
   const handleEvent = function* (raw: string): Generator<string> {
     // SSE event may contain multiple lines (comments, "event:", "id:", etc.).
     // We only care about `data:` lines; concatenate their payloads.
@@ -204,13 +202,6 @@ export async function* streamInterviewerApi(
     if (typeof type !== "string" || !type.startsWith("data-")) return;
     const data = (chunk as { data?: unknown }).data;
     if (!data || typeof data !== "object") return;
-    if (type === "data-summary") {
-      const value = (data as { value?: unknown }).value;
-      if (typeof value === "string") {
-        onData({ type: "summary", value });
-      }
-      return;
-    }
     if (type === "data-error") {
       const message = (data as { message?: unknown }).message;
       if (typeof message === "string") {

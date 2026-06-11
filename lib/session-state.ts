@@ -1,5 +1,5 @@
 // SessionState is app-owned. The agent never mutates it directly — tools request, app validates and commits.
-// chatHistory and rollingSummary are intentionally NOT here — they live in per-request route state, not session.
+// chatHistory is intentionally NOT here — it travels separately on the request and is sent to the model in full.
 // roundStartTime and phaseStartTime are intentionally NOT here — they live in InterviewWorkspace state
 // for elapsed-time reasoning. SessionState only carries what agent tools need.
 
@@ -36,6 +36,24 @@ export type TestRunSummary = {
     hidden: boolean;
   }>;
 };
+
+/**
+ * The follow-up variant the candidate is ACTIVELY working on. Durable across
+ * turns (unlike codingEscalationHint, which exists only on the introduction
+ * turn) so the model always knows which task the conversation is about — the
+ * base question block in the system prompt would otherwise reassert itself
+ * once the introduction scrolls out of recent history. The app owns the
+ * lifecycle: set when the introduction turn is delivered, cleared when the
+ * variant's segment wraps. `mode` is decided by the app from remaining time
+ * at scheduling — the model never reads the clock to pick the format.
+ * Carries only the candidate-facing prompt — never hidden test data.
+ */
+export type ActiveFollowUp = Readonly<{
+  index: number;
+  prompt: string;
+  /** "code" = full mini-round (approach → implement → submit); "verbal" = discussion only. */
+  mode: "code" | "verbal";
+}>;
 
 // questionId is the persistent identity — there is no separate sessionId.
 // Persistence is keyed by questionId in interview-session-storage.ts.
@@ -78,6 +96,8 @@ export type SessionState = Readonly<{
    * the specific failed edge case by name. Absent on normal turns.
    */
   submitReviewHint?: string;
+  /** See ActiveFollowUp. null/absent while the baseline (original problem) is the task. */
+  activeFollowUp?: ActiveFollowUp | null;
   question: Pick<
     Question,
     "id" | "title" | "difficulty" | "candidateDescription" | "testCases" | "entryFunction"

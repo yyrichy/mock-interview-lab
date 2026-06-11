@@ -87,9 +87,9 @@ const PHASE_RULES: Record<SessionPhase, string> = {
 - Your default in this segment is SILENCE. A real interviewer mostly watches the candidate code; they do NOT pepper them with questions while typing.
 - Reply only when the candidate asks a direct question or requests feedback, or when you have a concrete signal from tools (e.g. get_test_results shows a failure pattern worth a nudge). For short status updates ("ok", "thinking") give at most a one-line acknowledgment.
 - Hard prohibitions in coding (all belong AFTER they finish): asking unprompted edge-case questions, commenting on time/space complexity of their code, suggesting code modifications, proposing optimizations or variants, recapping what their code does, behavioral questions.
-- Escalation (only when an escalation HINT is present in this turn's context): the HINT names the next variant. FIRST silently read their current code (read_current_code). If their existing solution ALREADY satisfies that variant, do NOT re-ask it — briefly credit them for getting ahead of it, then end your turn with [segment-complete] on its own final line so we move on. Otherwise check remainingMs from the live state block above:
-  IF remainingMs > 900000 (more than 15 minutes left): introduce the variant naturally in one sentence ("Nice — now suppose…"), then immediately ask them to walk you through their approach for this new problem — do NOT ask them to code yet. You are re-entering a planning discussion: elicit their approach and expected complexity first, exactly as you would at the start of the interview. Once they have stated a reasonable approach and complexity, tell them to implement it and submit. Full coding round.
-  IF remainingMs <= 900000 (15 minutes or less): introduce the variant naturally, ask them to walk through how they would approach it and what the complexity would be — verbal only. Do not ask them to implement. Probe their approach with one or two focused questions, then wrap with [segment-complete]. Never mention time, the clock, or that you are skipping implementation — just ask about the approach naturally as if that is the intended format.
+- Escalation (only when an escalation HINT is present in this turn's context): the HINT names the next variant AND its format. FIRST silently read their current code (read_current_code). If their existing solution ALREADY satisfies that variant, do NOT re-ask it — briefly credit them for getting ahead of it, then end your turn with [segment-complete] on its own final line so we move on. Otherwise follow the format the HINT states:
+  FULL CODING ROUND: introduce the variant naturally in one sentence ("Nice — now suppose…"), then immediately ask them to walk you through their approach for this new problem — do NOT ask them to code yet. You are re-entering a planning discussion: elicit their approach and expected complexity first, exactly as you would at the start of the interview. The ACTIVE TASK block below carries this forward across turns: once they state a reasonable approach and complexity, tell them to implement it and submit.
+  VERBAL ONLY: introduce the variant naturally, ask them to walk through how they would approach it and what the complexity would be — verbal only. Do not ask them to implement. Probe their approach with one or two focused questions, then wrap with [segment-complete]. Never mention time, the clock, or that you are skipping implementation — just ask about the approach naturally as if that is the intended format.
   Do NOT invent your own escalation without a HINT.
 - Wrapping up the implementation (only when a forced-wrap HINT is present): tell them you want to pause here and have them walk you through their final approach end-to-end — correctness, time and space, and any tradeoffs. E.g. "Let's pause there — walk me through your full approach: how it works, what the complexity looks like, and any tradeoffs you're weighing." Never mention timers, the app, "phases", "running out of time", or "I have to stop you".
 - If you do speak this turn, end with at least one natural sentence to the candidate. A turn that only calls tools (reading code, fetching state) with nothing said is never a complete reply. Never mention tool names or that you are fetching anything.`,
@@ -195,6 +195,21 @@ export function buildSystemPrompt(state: SessionState): string {
       ? `\n\n[Submit grade for the implementation they just submitted — ${state.submitReviewHint.trim()}]`
       : "";
 
+  // Durable task identity. Without this, the variant exists only in the
+  // one-shot escalation hint + chat history, and once the introduction scrolls
+  // out of recent context the "Problem the candidate is solving" block above
+  // wins — the model regresses to interviewing on the original statement.
+  const activeTaskBlock = state.activeFollowUp
+    ? `\n\nACTIVE TASK — the candidate has ALREADY solved the original problem above and is NOW working on this follow-up variant:
+"${state.activeFollowUp.prompt}"
+Treat this variant as the current problem from here on. Every question you ask, every review you give, and every Submit grade you judge is about THIS variant — not the original statement. Do not re-litigate or re-credit the original solution.${
+        state.activeFollowUp.mode === "code"
+          ? `\nThis variant is a full mini-round, run exactly like the original problem was: first elicit their approach and expected complexity verbally; once they state a reasonable approach, tell them to implement it in the editor and Submit. Do not let the variant stay verbal-only, and do not wrap it with [segment-complete] before a passing Submit of the variant implementation.`
+          : `\nThis variant is a verbal discussion only: probe their approach and expected complexity with one or two focused questions, then wrap with [segment-complete]. Never ask them to implement it, and never mention that implementation is being skipped.`
+      }
+The Interviewer reference below describes the ORIGINAL problem — use it for background only; do not judge the variant against the original problem's optimal solution or test expectations.`
+    : "";
+
   return `${buildPersona()}${phaseBlock}
 
 Live session state (reflects current state at the start of this turn; never quote this block to the candidate):
@@ -203,33 +218,25 @@ ${stateBlock}${escalationBlock}${submitReviewBlock}
 Problem the candidate is solving:
 ${state.question.title}
 
-${state.question.candidateDescription}
+${state.question.candidateDescription}${activeTaskBlock}
 
 Interviewer reference (server-only — use to answer clarifying questions accurately and to judge approach/follow-ups fairly; never read this aloud, paste it, or volunteer details the candidate did not ask for; do not recite optimal solutions, full test inputs/outputs, or hidden cases unless their question requires it):
 ${state.question.interviewerContext ?? ""}`;
 }
 
 export function buildContextMessages(
-  rollingSummary: string,
-  recentMessages: ChatMessage[],
+  history: ChatMessage[],
   escalationHint?: string | null
 ): Array<{ role: "user" | "assistant"; content: string }> {
-  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
-  if (rollingSummary.trim().length > 0) {
-    // Summary is injected as a single user-role context note. No synthetic
-    // assistant acknowledgment — fake assistant turns bleed into model tone.
-    messages.push({
-      role: "user",
-      content: `[Session memory — summary of earlier conversation]\n${rollingSummary}`,
-    });
-  }
-  // Last 8 *messages* (not 8 turns — a turn is one user + one assistant, so
-  // this is roughly the last 4 exchanges).
-  const recent = recentMessages.slice(-8).map((m) => ({
+  // FULL conversation history, verbatim, every turn. The previous rolling-
+  // summary + last-8-messages window saved a trivial number of tokens (an
+  // interview transcript is small) while lossily erasing task identity — the
+  // variant introduction would fall out of the window and the model regressed
+  // to the base question. Exact memory beats compression here.
+  const result = history.map((m) => ({
     role: m.role,
     content: m.content,
   }));
-  const result = [...messages, ...recent];
   // The escalation HINT also rides the system prompt, but a model's strongest
   // instinct is to answer the LAST message — and on the app-fired variant turn
   // the history can end with a dangling candidate remark (e.g. "ok is that it")

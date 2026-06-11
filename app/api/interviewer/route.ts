@@ -33,14 +33,12 @@ import {
   resolveProviderKey,
 } from "@/lib/resolve-provider-key";
 import type { SessionState } from "@/lib/session-state";
-import { summarizeSession } from "@/lib/summarize";
 
 export const runtime = "nodejs";
 
 type InterviewerRequestBody = {
   sessionState: SessionState;
   messages: ChatMessage[];
-  rollingSummary: string;
   transcript: TranscriptEntry[];
   turnCount: number;
   modelPresetId?: string;
@@ -49,8 +47,7 @@ type InterviewerRequestBody = {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as InterviewerRequestBody;
-    const { sessionState, messages, rollingSummary, transcript, turnCount } =
-      body;
+    const { sessionState, messages, transcript, turnCount } = body;
 
     // Resolve which provider/model to run the agent on from the UI preset.
     const modelPresetId =
@@ -82,22 +79,6 @@ export async function POST(req: NextRequest) {
 
     const model = getInterviewerLanguageModel(modelConfig, apiKey);
 
-    // Summaries still run on the utility provider (Groq fallback) unless
-    // ANTHROPIC_API_KEY env is set (summarizeSession's primary path). Resolve a
-    // Groq-matched key for that fallback only — the interviewer BYOK key is
-    // forwarded to summarize only when it is itself a Groq key. When the
-    // interviewer runs on a non-Groq provider with no GROQ_API_KEY env and no
-    // Anthropic env, summaries are skipped (failure is swallowed downstream).
-    const summarizeGroqKey =
-      (byokKey?.startsWith("gsk_") ? byokKey : undefined) ??
-      process.env.GROQ_API_KEY;
-
-    // This turn's context uses the OLD rollingSummary. When a refresh is due,
-    // the new summary is emitted on the data-stream channel (see execute
-    // below) — NOT a response header — so summary latency does not affect
-    // TTFB. messages.slice(-5) compresses only what's new since last summarize.
-    const summarizeFired = turnCount > 0 && turnCount % 5 === 0;
-
     // body transcript is the live value — overrides sessionState.transcript
     // which is the turn-start snapshot. buildTools(state) reads
     // state.transcript internally, so we merge here.
@@ -121,7 +102,6 @@ export async function POST(req: NextRequest) {
     // the system block's phase gate so a stale hint on a non-coding turn is
     // ignored.
     const contextMessages = buildContextMessages(
-      rollingSummary,
       messages,
       stateForTurn.phase === "coding" ? stateForTurn.codingEscalationHint : undefined
     );
@@ -138,7 +118,7 @@ export async function POST(req: NextRequest) {
         messageCount: messages.length,
         topicsProbed: sessionState.topicsProbed,
         turnCount,
-        summarizeFired,
+        activeFollowUp: sessionState.activeFollowUp ?? null,
       });
     }
 
@@ -148,12 +128,10 @@ export async function POST(req: NextRequest) {
     // grounding tools are read-only and need no client commit.
     const ACTION_TOOLS = ["run_tests"];
 
-    // Wrap streamText in a UI message stream so the new rolling summary and
-    // action-tool results ride the same response. Model output and summary
-    // call run in parallel; the response closes once both writers finish.
-    // TTFB is unaffected by summary latency. Data parts are emitted with
-    // `transient: true` so the SDK does not persist them as message history —
-    // they are side-effect channels, not message content.
+    // Wrap streamText in a UI message stream so action-tool results ride the
+    // same response. Data parts are emitted with `transient: true` so the SDK
+    // does not persist them as message history — they are side-effect
+    // channels, not message content.
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         if (process.env.NODE_ENV === "development") {
@@ -197,9 +175,6 @@ export async function POST(req: NextRequest) {
             }
             return {};
           },
-          // summarizeSession below does not receive this signal — it will run
-          // to its 30s timeout on disconnect. Fix requires adding
-          // signal?: AbortSignal to summarize.ts — tracked for post-Day-2.
           abortSignal: req.signal,
           onError({ error }) {
             if (process.env.NODE_ENV === "development") {
@@ -312,25 +287,6 @@ export async function POST(req: NextRequest) {
           },
         });
         writer.merge(result.toUIMessageStream());
-
-        if (summarizeFired) {
-          try {
-            const newSummary = await summarizeSession(
-              rollingSummary,
-              messages.slice(-5),
-              summarizeGroqKey
-            );
-            if (newSummary !== rollingSummary) {
-              writer.write({
-                type: "data-summary",
-                data: { value: newSummary },
-                transient: true,
-              });
-            }
-          } catch {
-            // Silent fallback — summary failure must never break the turn.
-          }
-        }
       },
     });
 

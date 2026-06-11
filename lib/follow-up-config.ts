@@ -15,3 +15,13 @@ export const FOLLOW_UP_AUTO_CLOSE_REMAINING_MS = 2 * 60 * 1000;
  * follow-up turn before forcing — enough for "1 ack + 2 probes", no more.
  */
 export const FOLLOW_UP_SLICE_SAFETY_CAP = 3;
+
+/**
+ * A banked variant runs as a FULL mini coding round (approach discussion →
+ * implement → submit) only when at least this much round time remains when it
+ * is scheduled; below it the variant is delivered as a verbal-only discussion.
+ * The app decides this branch (it owns the clock) and stamps the result on
+ * ActiveFollowUp.mode — the model is never asked to read remainingMs and pick
+ * the format itself.
+ */
+export const FOLLOW_UP_VARIANT_FULL_ROUND_MIN_REMAINING_MS = 15 * 60 * 1000;
