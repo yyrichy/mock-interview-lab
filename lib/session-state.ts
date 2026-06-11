@@ -49,8 +49,12 @@ export type TestRunSummary = {
  * Carries only the candidate-facing prompt — never hidden test data.
  */
 export type ActiveFollowUp = Readonly<{
+  /** FollowUp.id — sent as followUpId on Run/Submit so grading targets this variant's test sets. */
+  id: string;
   index: number;
   prompt: string;
+  /** Graded entry function when the variant's contract differs from the baseline's (FollowUp.entryFunction). */
+  entryFunction?: string;
   /** "code" = full mini-round (approach → implement → submit); "verbal" = discussion only. */
   mode: "code" | "verbal";
 }>;
@@ -96,6 +100,14 @@ export type SessionState = Readonly<{
    * the specific failed edge case by name. Absent on normal turns.
    */
   submitReviewHint?: string;
+  /**
+   * Transient per-turn hint (NOT persisted): set only on the app-fired turn
+   * that OPENS the final Q&A segment. The app decides from remaining time
+   * whether the opener asks substantive deeper questions or closes the
+   * interview warmly; without it the model may wrap the segment on its very
+   * first turn and feedback fires with no final questions asked.
+   */
+  finalFollowUpHint?: string;
   /** See ActiveFollowUp. null/absent while the baseline (original problem) is the task. */
   activeFollowUp?: ActiveFollowUp | null;
   question: Pick<

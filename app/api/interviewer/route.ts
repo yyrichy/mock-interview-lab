@@ -97,14 +97,17 @@ export async function POST(req: NextRequest) {
     };
 
     const system = buildSystemPrompt(stateForTurn);
-    // The escalation hint rides BOTH the system prompt (full instructions) and
-    // the final context message (recency — see buildContextMessages). Mirror
-    // the system block's phase gate so a stale hint on a non-coding turn is
-    // ignored.
-    const contextMessages = buildContextMessages(
-      messages,
-      stateForTurn.phase === "coding" ? stateForTurn.codingEscalationHint : undefined
-    );
+    // App-fired control hints ride BOTH the system prompt (full instructions)
+    // and the final context message (recency — see buildContextMessages).
+    // Mirror the system blocks' phase gates so a stale hint on the wrong
+    // phase's turn is ignored.
+    const controlHint =
+      stateForTurn.phase === "coding"
+        ? stateForTurn.codingEscalationHint
+        : stateForTurn.phase === "followUp"
+          ? stateForTurn.finalFollowUpHint
+          : undefined;
+    const contextMessages = buildContextMessages(messages, controlHint);
     const tools = buildTools(stateForTurn);
     const isOpeningTurn = messages.length === 0;
     const toolsForTurn = isOpeningTurn ? {} : tools;

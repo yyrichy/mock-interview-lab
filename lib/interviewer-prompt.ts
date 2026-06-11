@@ -113,7 +113,7 @@ const PHASE_RULES: Record<SessionPhase, string> = {
 - One focused question per reply. Calibrate difficulty to the problem and to how the candidate is doing.
 - Stay in the same problem family — edge cases, complexity of their approach, invariants. Do NOT string unrelated system-design / distributed / streaming / thread-safety questions onto an unrelated baseline.
 - De-escalate if they say "not sure" or give short evasive answers: rephrase more simply, offer a one-sentence hint, or a smaller sub-question. Never stack a harder topic on a failed one.
-- Closing — IMPORTANT: only when the current solution is actually correct (its submit passed, or you are satisfied with what they have) AND you have covered what you need, wrap the thread in 1–2 sentences with no new question, then end your reply with the token [segment-complete] on its own final line. The prose and the token ALWAYS travel together — a complete wrap turn looks exactly like:
+- Closing — IMPORTANT: only when the current solution is actually correct (its submit passed, or you are satisfied with what they have) AND you have covered what you need, wrap the thread in 1–2 sentences with no new question AND no instruction — a wrap is an acknowledgment, never a request to change, add, or "make sure" anything — then end your reply with the token [segment-complete] on its own final line. The prose and the token ALWAYS travel together — a complete wrap turn looks exactly like:
   Okay, that works.
   [segment-complete]
   Never send a closing line without the token (the interview stalls waiting for it), and never send the token alone without at least one closing sentence before it. Keep the wrap in natural interviewer voice — "Okay, that works." / "Good, I'm happy with that." — never "that covers what I needed on this version" or any mention of versions/segments. The token (stripped before the candidate sees it) is what moves the interview forward. Emit it exactly once, only when you are genuinely done — NEVER while a submission is still failing. Do NOT mention feedback, buttons, the app, or what comes next, and never write the feedback yourself.
@@ -163,6 +163,11 @@ export function buildSystemPrompt(state: SessionState): string {
         "- This is a forced verbal wrap-up: time is short and the candidate did not fully finish. Open by asking them to walk through their approach end-to-end, then probe one focused gap from that walkthrough. Do not start a fresh complexity drill."
       );
     }
+    if (state.followUpSegment === "final") {
+      extras.push(
+        "- This is the FINAL Q&A — the last conversational segment of the whole interview; the written feedback is generated the moment it wraps. Ask one to three substantive questions across the segment, ONE per turn, each grounded in the work they actually did this session — an edge case their code might mishandle, a tradeoff they made, scaling, or testing — and WAIT for each answer. Do not wrap on the same turn you ask a question. When you have covered what you need (or they clearly have nothing left), wrap on its own turn with a warm interview-ending close — e.g. \"Great — that's everything I wanted to cover. Nice work today.\" — plus [segment-complete]. That closing turn is a goodbye: it must contain NO question, NO instruction, and NO task. Never end the interview with a directive like \"make sure ...\" or \"return ...\"."
+      );
+    }
     if (state.followUpSegment === "slice") {
       extras.push(
         "- This is a focused review of the code they just submitted, not the final wrap. Keep it TIGHTLY scoped. If the submission PASSED: ask at most ONE focused question and WAIT for the answer — do NOT also emit [segment-complete] on the turn you ask it. Only after they respond, wrap on a separate turn (no new question) with [segment-complete] — one closing sentence plus the token, never one without the other. Do NOT open a follow-up ladder or keep hunting for more edge cases on a solution that already passed. If it FAILED: name the failing behaviour and keep them fixing and re-submitting; do NOT close while it is still failing."
@@ -186,6 +191,16 @@ export function buildSystemPrompt(state: SessionState): string {
       ? `\n\n[HINT — ${state.codingEscalationHint.trim()}]`
       : "";
 
+  // Final-Q&A opener hint: present only on the app-fired turn that opens the
+  // final segment. Carries the app's time-branch decision (ask deeper
+  // questions vs. close warmly).
+  const finalFollowUpBlock =
+    state.phase === "followUp" &&
+    typeof state.finalFollowUpHint === "string" &&
+    state.finalFollowUpHint.trim().length > 0
+      ? `\n\n[HINT — ${state.finalFollowUpHint.trim()}]`
+      : "";
+
   // Submit-result hint: present only on the review turn a candidate Submit
   // triggers. Counts + failed-hidden DESCRIPTIONS only — never raw hidden I/O.
   const submitReviewBlock =
@@ -204,16 +219,21 @@ export function buildSystemPrompt(state: SessionState): string {
 "${state.activeFollowUp.prompt}"
 Treat this variant as the current problem from here on. Every question you ask, every review you give, and every Submit grade you judge is about THIS variant — not the original statement. Do not re-litigate or re-credit the original solution.${
         state.activeFollowUp.mode === "code"
-          ? `\nThis variant is a full mini-round, run exactly like the original problem was: first elicit their approach and expected complexity verbally; once they state a reasonable approach, tell them to implement it in the editor and Submit. Do not let the variant stay verbal-only, and do not wrap it with [segment-complete] before a passing Submit of the variant implementation.`
+          ? `\nThis variant is a full mini-round, run exactly like the original problem was: first elicit their approach and expected complexity verbally; once they state a reasonable approach, tell them to implement it in the editor and Submit. Do not let the variant stay verbal-only, and do not wrap it with [segment-complete] before a passing Submit of the variant implementation.${
+              typeof state.activeFollowUp.entryFunction === "string" &&
+              state.activeFollowUp.entryFunction.trim().length > 0
+                ? `\nIMPORTANT — when you tell them to implement, give them the exact function to define: the grader calls \`${state.activeFollowUp.entryFunction.trim()}\` with the signature stated in the variant prompt above (NOT the original problem's function). Their existing function can stay in the editor; they add the new one.`
+                : ""
+            }`
           : `\nThis variant is a verbal discussion only: probe their approach and expected complexity with one or two focused questions, then wrap with [segment-complete]. Never ask them to implement it, and never mention that implementation is being skipped.`
       }
-The Interviewer reference below describes the ORIGINAL problem — use it for background only; do not judge the variant against the original problem's optimal solution or test expectations.`
+Run/Submit and your run_tests tool grade against THIS variant's own test cases while it is active — a passing grade means the VARIANT is solved. The Interviewer reference below describes the ORIGINAL problem — use it for background only; do not judge the variant against the original problem's optimal solution or test expectations.`
     : "";
 
   return `${buildPersona()}${phaseBlock}
 
 Live session state (reflects current state at the start of this turn; never quote this block to the candidate):
-${stateBlock}${escalationBlock}${submitReviewBlock}
+${stateBlock}${escalationBlock}${finalFollowUpBlock}${submitReviewBlock}
 
 Problem the candidate is solving:
 ${state.question.title}

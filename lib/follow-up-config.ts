@@ -25,3 +25,12 @@ export const FOLLOW_UP_SLICE_SAFETY_CAP = 3;
  * the format itself.
  */
 export const FOLLOW_UP_VARIANT_FULL_ROUND_MIN_REMAINING_MS = 15 * 60 * 1000;
+
+/**
+ * The final Q&A opens with substantive deeper questions only when at least
+ * this much round time remains when the segment starts; below it the opener is
+ * told to close the interview warmly instead. The app decides this branch (it
+ * owns the clock) and states it in the opener hint — the model is never asked
+ * to read remainingMs and choose.
+ */
+export const FINAL_QA_MIN_REMAINING_MS = 4 * 60 * 1000;

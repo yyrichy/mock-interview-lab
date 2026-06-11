@@ -43,6 +43,18 @@ export function buildBankedEscalationHint(
 }
 
 /**
+ * Hint for the app-fired turn that OPENS the final Q&A segment. The app owns
+ * the time branch: with room left the opener must ask a real question (never
+ * wrap turn one); short on time it closes the interview warmly instead.
+ */
+export function buildFinalFollowUpOpenerHint(shortOnTime: boolean): string {
+  if (shortOnTime) {
+    return "This turn opens the final Q&A and the round is nearly over. Close the interview now: a warm one-or-two-sentence wrap that sounds like the natural end of an interview — no new question, no instruction, no task — ending with [segment-complete].";
+  }
+  return "This turn OPENS the final Q&A — the last conversational segment before the written feedback. All coding is finished; never assign new implementation work. If the candidate's last message left something unanswered, close it out in a few words first, in the SAME reply. Then ask ONE substantive deeper question about the work they actually did this session — an edge case their code might mishandle, a tradeoff they made, how their approach scales, or how they would test it. Do NOT emit [segment-complete] on this turn; the wrap comes on a later turn, after they have answered.";
+}
+
+/**
  * Counts-only review hint for the turn a candidate Submit triggers. Carries
  * aggregate pass/fail counts plus the human-readable DESCRIPTIONS of failed
  * hidden cases — never raw hidden input/expected/actual (the model is told it

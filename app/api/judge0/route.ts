@@ -1,5 +1,5 @@
 import { runCode } from "@/lib/judge0";
-import { getQuestionById } from "@/lib/questions";
+import { getQuestionById, resolveFollowUpTestSets } from "@/lib/questions";
 
 export const runtime = "nodejs";
 
@@ -19,10 +19,13 @@ export async function POST(req: Request) {
   // hidden) are loaded server-side from the question bank by questionId, so
   // hidden inputs/expected never cross the browser boundary. `includeHidden`
   // distinguishes a Submit (grades hidden cases) from a Run (visible only).
-  const { questionId, code, includeHidden } = body as {
+  // `followUpId` (optional) targets a follow-up variant's test sets instead of
+  // the baseline's — resolved server-side from the same bank entry.
+  const { questionId, code, includeHidden, followUpId } = body as {
     questionId?: unknown;
     code?: unknown;
     includeHidden?: unknown;
+    followUpId?: unknown;
   };
   if (typeof code !== "string") {
     return Response.json({ error: "code must be a string" }, { status: 400 });
@@ -40,9 +43,30 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
-  const entry = ENTRY_FN_RE.test(question.entryFunction)
-    ? question.entryFunction
-    : null;
+  if (followUpId !== undefined && typeof followUpId !== "string") {
+    return Response.json(
+      { error: "followUpId must be a string" },
+      { status: 400 }
+    );
+  }
+  // A provided-but-unknown variant id is a client bug — fail loudly rather
+  // than silently grading against the baseline (which is the exact wedge this
+  // parameter exists to prevent).
+  if (
+    typeof followUpId === "string" &&
+    !question.followUps?.some((f) => f.id === followUpId)
+  ) {
+    return Response.json(
+      { error: `Unknown followUpId "${followUpId}" for question "${questionId}"` },
+      { status: 400 }
+    );
+  }
+  // Which task is being graded: the active variant's entry function + test
+  // sets when followUpId is present (falling back to baseline only if the
+  // variant defines none), else the baseline's. Validate the RESOLVED entry —
+  // it is what gets interpolated into the harness.
+  const sets = resolveFollowUpTestSets(question, followUpId);
+  const entry = ENTRY_FN_RE.test(sets.entryFunction) ? sets.entryFunction : null;
   if (entry == null) {
     return Response.json(
       { error: "entryFunction must be a valid Python identifier" },
@@ -50,9 +74,9 @@ export async function POST(req: Request) {
     );
   }
   // Run = visible only; Submit = visible + hidden grading.
-  const hidden = includeHidden === true ? question.hiddenTestCases ?? [] : [];
+  const hidden = includeHidden === true ? sets.hiddenTestCases : [];
   try {
-    const result = await runCode(code, question.testCases, entry, hidden);
+    const result = await runCode(code, sets.testCases, entry, hidden);
     // Failed hidden cases are surfaced to the model BY DESCRIPTION ONLY (their
     // human-readable label) so it can probe the specific edge case. Raw hidden
     // input/expected/actual are never included. Index alignment holds because

@@ -54,6 +54,7 @@ import {
 } from "@/lib/speech";
 import type { TestResult, RunCodeResult } from "@/lib/judge0";
 import {
+  FINAL_QA_MIN_REMAINING_MS,
   FOLLOW_UP_AUTO_CLOSE_REMAINING_MS,
   FOLLOW_UP_SLICE_SAFETY_CAP,
   FOLLOW_UP_VARIANT_FULL_ROUND_MIN_REMAINING_MS,
@@ -76,6 +77,7 @@ import { assistantInvitesCodingWithoutToken } from "@/lib/planning-coding-invite
 import { buildCodingVoiceReport } from "@/lib/coding-voice-report";
 import {
   buildBankedEscalationHint,
+  buildFinalFollowUpOpenerHint,
   buildSubmitReviewHint,
   getPendingBankedFollowUp,
 } from "@/lib/coding-escalation";
@@ -143,13 +145,6 @@ function stripSegmentDone(text: string): { cleaned: string; found: boolean } {
 // (wait for the reply) instead of skipping the candidate past it.
 function endsWithQuestion(text: string): boolean {
   return /\?["')\]]*\s*$/.test(text.trim());
-}
-
-// The question-hold guard only applies to the slice (post-Submit) review. Routed
-// through a helper so the full FollowUpSegment union is preserved at call sites
-// where flow analysis has narrowed the ref to a single literal.
-function isSliceReview(segment: FollowUpSegment): boolean {
-  return segment === "slice";
 }
 
 // Identity of a submitted solution, for idempotent Submit. Strips per-line
@@ -1070,7 +1065,13 @@ export function InterviewWorkspace({ question }: Props) {
     // runCodingEscalationNudge only after the introduction turn actually completes.
     pendingProactiveBankedCommitRef.current = {
       nextIndex: pending.index + 1,
-      active: { index: pending.index, prompt: pending.followUp.prompt, mode },
+      active: {
+        id: pending.followUp.id,
+        index: pending.index,
+        prompt: pending.followUp.prompt,
+        entryFunction: pending.followUp.entryFunction,
+        mode,
+      },
     };
     pendingProactiveEscalationHintRef.current = buildBankedEscalationHint(
       pending.followUp,
@@ -1553,13 +1554,13 @@ export function InterviewWorkspace({ question }: Props) {
             m.id === assistantId ? { ...m, content: cleaned } : m
           )
         );
-        // Hold the advance if this slice-review turn still asks a question — the
-        // candidate must get to answer it before we move on, even if the model
-        // wrongly bundled the wrap token. The turn cap (FOLLOW_UP_SLICE_SAFETY_CAP)
-        // still backstops a model that never stops asking. Final-segment wraps are
-        // unaffected (followUpSegment is "final" there, not "slice").
+        // Hold the advance if this review/final-Q&A turn still asks a question —
+        // the candidate must get to answer it before we move on, even if the
+        // model wrongly bundled the wrap token (in the final segment a bundled
+        // token would fire feedback while the question dangles). The turn caps
+        // and the round clock still backstop a model that never stops asking.
         const holdForAnswer =
-          isSliceReview(followUpSegmentRef.current) && endsWithQuestion(cleaned);
+          phaseNow === "followUp" && endsWithQuestion(cleaned);
         if (
           (phaseNow === "followUp" || baselineSolvedAtRef.current !== null) &&
           !holdForAnswer
@@ -1775,18 +1776,11 @@ export function InterviewWorkspace({ question }: Props) {
         );
       }
       const wrapResult = stripSegmentDone(fullStreamed);
-      // Hold the advance if a slice-review wrap still poses a question: an
-      // over-eager caller sometimes appends [segment-complete] to the same turn it
-      // asks its one focused question (e.g. the opener), which would skip the
-      // candidate's answer. Final-segment wraps are unaffected (followUpSegment is
-      // "final" there, so holdForAnswer is always false).
-      if (
-        wrapResult.found &&
-        !(
-          isSliceReview(followUpSegmentRef.current) &&
-          endsWithQuestion(wrapResult.cleaned)
-        )
-      ) {
+      // Hold the advance if the wrap still poses a question: an over-eager
+      // caller sometimes appends [segment-complete] to the same turn it asks a
+      // question, which would skip the candidate's answer — in the final
+      // segment that means feedback fires while their question dangles.
+      if (wrapResult.found && !endsWithQuestion(wrapResult.cleaned)) {
         pendingSegmentAdvanceRef.current = true;
         segmentWrapped = true;
       }
@@ -1842,12 +1836,24 @@ export function InterviewWorkspace({ question }: Props) {
     markStreamStart(assistantId);
     currentAgentAssistantIdRef.current = assistantId;
 
+    // The app — owner of the clock — decides whether this opener asks deeper
+    // questions or closes the interview. Without the hint the model may wrap
+    // the segment on its very first turn and feedback fires with no final
+    // questions asked.
+    const finalOpenerState: SessionState = {
+      ...buildCurrentSessionState(),
+      finalFollowUpHint: buildFinalFollowUpOpenerHint(
+        roundTimedOutRef.current ||
+          getRemainingRoundMsNow() <= FINAL_QA_MIN_REMAINING_MS
+      ),
+    };
+
     let fullStreamed = "";
     let segmentWrapped = false;
     try {
       for await (const chunk of streamInterviewerApi(
         {
-          sessionState: buildCurrentSessionState(),
+          sessionState: finalOpenerState,
           messages: historyForApi,
           transcript: transcriptRef.current,
           turnCount: Math.floor(historyForApi.length / 2),
@@ -1868,18 +1874,11 @@ export function InterviewWorkspace({ question }: Props) {
         );
       }
       const wrapResult = stripSegmentDone(fullStreamed);
-      // Hold the advance if a slice-review wrap still poses a question: an
-      // over-eager caller sometimes appends [segment-complete] to the same turn it
-      // asks its one focused question (e.g. the opener), which would skip the
-      // candidate's answer. Final-segment wraps are unaffected (followUpSegment is
-      // "final" there, so holdForAnswer is always false).
-      if (
-        wrapResult.found &&
-        !(
-          isSliceReview(followUpSegmentRef.current) &&
-          endsWithQuestion(wrapResult.cleaned)
-        )
-      ) {
+      // Hold the advance if the wrap still poses a question: an over-eager
+      // caller sometimes appends [segment-complete] to the same turn it asks a
+      // question, which would skip the candidate's answer — in the final
+      // segment that means feedback fires while their question dangles.
+      if (wrapResult.found && !endsWithQuestion(wrapResult.cleaned)) {
         pendingSegmentAdvanceRef.current = true;
         segmentWrapped = true;
       }
@@ -1913,6 +1912,12 @@ export function InterviewWorkspace({ question }: Props) {
     // "unchanged" against the baseline submission).
     lastSubmittedCodeRef.current = null;
     lastSubmitOutcomeRef.current = null;
+    // The baseline's test results are about a DIFFERENT task — without this the
+    // state block tells the model "tests passed" while the variant has never run.
+    lastTestResultRef.current = null;
+    setTestResults(null);
+    setTestAllPassed(null);
+    setTestRunError(null);
     followUpGenRef.current += 1;
     followUpSealedRef.current = false;
     setFollowUpSealed(false);
@@ -1990,10 +1995,11 @@ export function InterviewWorkspace({ question }: Props) {
     void enterFinalFollowUpPhase();
   }
 
-  // Submit = "evaluate me." Runs the FULL Judge0 set (visible + hidden — for a
-  // variant this re-runs the baseline hidden cases), records the grade, then
-  // opens Alex's review with the counts-only hint. Never hard-blocked by the run
-  // cap (free submission); it still increments the shared counter.
+  // Submit = "evaluate me." Runs the FULL Judge0 set for the ACTIVE task
+  // (visible + hidden — a live variant's own test sets when it defines them),
+  // records the grade, then opens Alex's review with the counts-only hint.
+  // Never hard-blocked by the run cap (free submission); it still increments
+  // the shared counter.
   async function handleSubmit(): Promise<void> {
     // Submit is available while coding a baseline/variant, and also during a
     // submission review (followUp/slice) so the candidate can fix a failed
@@ -2053,7 +2059,9 @@ export function InterviewWorkspace({ question }: Props) {
           questionId: question.id,
           code: submittedCode,
           // Submit grades hidden cases — the route loads them server-side from
-          // the question bank by questionId.
+          // the question bank by questionId. When a variant is the active task,
+          // its test sets replace the baseline's.
+          followUpId: activeFollowUpRef.current?.id,
           includeHidden: true,
         }),
       });
@@ -2297,6 +2305,8 @@ export function InterviewWorkspace({ question }: Props) {
         body: JSON.stringify({
           questionId: question.id,
           code: codeRef.current,
+          // Run grades the active task too — variant visible cases when one is live.
+          followUpId: activeFollowUpRef.current?.id,
           // Visible-only: a Run never executes hidden cases. Hidden grading is
           // reserved for Submit.
           includeHidden: false,

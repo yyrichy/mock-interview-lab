@@ -7,6 +7,20 @@ export type FollowUp = {
   prompt: string;
   /** Estimated minutes needed — used to decide whether to fire based on remaining time. */
   expectedMinutes: number;
+  /**
+   * Graded Python entry function for this variant when its contract (arity or
+   * return type) differs from the baseline's — e.g. `three_sum` for a Two Sum
+   * variant. The candidate defines it ALONGSIDE their existing code (the old
+   * function stays, harmlessly). The variant prompt must state the exact
+   * `def` line. Absent = the baseline entryFunction is graded.
+   */
+  entryFunction?: string;
+  /**
+   * Visible test cases for this variant (same schema as baseline testCases —
+   * candidate-safe). When present, Run/Submit for this variant grade against
+   * THESE instead of the baseline's; see resolveFollowUpTestSets.
+   */
+  testCases?: { input: string; expected: string }[];
   /** Optional hidden test cases for this variant (same schema as baseline). */
   hiddenTestCases?: HiddenTestCase[];
 };
@@ -68,7 +82,46 @@ export function toPublicQuestion(question: Question): PublicQuestion {
       id: f.id,
       prompt: f.prompt,
       expectedMinutes: f.expectedMinutes,
+      entryFunction: f.entryFunction,
+      testCases: f.testCases,
     })),
+  };
+}
+
+/**
+ * The test sets a Run/Submit should grade against, given which task is active.
+ * All-or-nothing: a variant that defines its own visible testCases brings its
+ * complete grading set (its hidden cases or none) — never a mix of variant
+ * visible + baseline hidden, which would grade two different problems at once.
+ * A variant with no testCases inherits the baseline wholesale (legacy data).
+ * Unknown followUpId falls back to baseline rather than failing the run.
+ */
+export function resolveFollowUpTestSets(
+  question: Question,
+  followUpId: string | null | undefined
+): {
+  entryFunction: string;
+  testCases: { input: string; expected: string }[];
+  hiddenTestCases: HiddenTestCase[];
+} {
+  const followUp = followUpId
+    ? question.followUps?.find((f) => f.id === followUpId)
+    : undefined;
+  // Independent of the test-set choice: an active variant's own entry function
+  // is always graded when it defines one (a variant that changes the function
+  // contract needs its own callable regardless of where its cases come from).
+  const entryFunction = followUp?.entryFunction ?? question.entryFunction;
+  if (followUp?.testCases && followUp.testCases.length > 0) {
+    return {
+      entryFunction,
+      testCases: followUp.testCases,
+      hiddenTestCases: followUp.hiddenTestCases ?? [],
+    };
+  }
+  return {
+    entryFunction,
+    testCases: question.testCases,
+    hiddenTestCases: question.hiddenTestCases ?? [],
   };
 }
 

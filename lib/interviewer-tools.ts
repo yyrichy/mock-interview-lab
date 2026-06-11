@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import { TEST_RUNS_MAX } from "./interview-limits";
 import { runCode } from "./judge0";
-import { getQuestionById } from "./questions";
+import { getQuestionById, resolveFollowUpTestSets } from "./questions";
 import type { SessionState } from "./session-state";
 
 // Input schema for the no-argument grounding tools. Groq (llama-3.3-70b) cannot
@@ -119,12 +119,18 @@ export function buildTools(state: SessionState): ToolSet {
             message: `Could not look up question "${state.question.id}" in the question bank.`,
           };
         }
+        // Grade against the ACTIVE task: when a follow-up variant is live, its
+        // test sets replace the baseline's (same resolution as /api/judge0).
+        const sets = resolveFollowUpTestSets(
+          fullQuestion,
+          state.activeFollowUp?.id ?? null
+        );
         try {
           const result = await runCode(
             state.currentCode,
-            fullQuestion.testCases,
-            fullQuestion.entryFunction,
-            fullQuestion.hiddenTestCases ?? []
+            sets.testCases,
+            sets.entryFunction,
+            sets.hiddenTestCases
           );
           const visibleCases = result.results.map((r) => ({
             input: r.input,

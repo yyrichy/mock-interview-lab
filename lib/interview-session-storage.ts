@@ -101,8 +101,10 @@ function isActiveFollowUp(v: unknown): v is ActiveFollowUp {
   }
   const o = v as Record<string, unknown>;
   return (
+    typeof o.id === "string" &&
     typeof o.index === "number" &&
     typeof o.prompt === "string" &&
+    (o.entryFunction === undefined || typeof o.entryFunction === "string") &&
     (o.mode === "code" || o.mode === "verbal")
   );
 }
