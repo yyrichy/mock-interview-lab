@@ -14,7 +14,7 @@ import type {
   SessionPhase,
   TranscriptEntry,
 } from "@/lib/chat";
-import { synthesizeWithElevenLabs } from "@/lib/speech";
+import { synthesizeAlexVoice } from "@/lib/speech";
 
 type Props = {
   messages: ChatMessage[];
@@ -209,7 +209,7 @@ export function ChatPanel({
     setTtsError(null);
     setTtsStatus("loading");
     try {
-      const blob = await synthesizeWithElevenLabs(trimmed);
+      const blob = await synthesizeAlexVoice(trimmed);
       if (ttsRequestIdRef.current !== requestId) {
         return;
       }

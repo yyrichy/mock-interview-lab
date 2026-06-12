@@ -11,6 +11,7 @@ import { useTickInterval } from "@/lib/hooks/useTickInterval";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ChatToggleButton } from "@/components/ChatToggleButton";
 import { Editor } from "@/components/Editor";
+import { FeedbackScreen } from "@/components/FeedbackScreen";
 import { ResizableTestResultsSection } from "@/components/ResizableTestResultsSection";
 import {
   streamFeedbackApi,
@@ -197,6 +198,9 @@ export function InterviewWorkspace({ question }: Props) {
   }));
 
   const [chatOpen, setChatOpen] = useState(true);
+  // Written scorecard text — streamed into the dedicated FeedbackScreen, not
+  // the chat. Not persisted (the session snapshot is cleared when feedback runs).
+  const [feedbackText, setFeedbackText] = useState("");
   const [sessionPhase, setSessionPhase] =
     useState<SessionPhase>("clarifying");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -2193,14 +2197,15 @@ export function InterviewWorkspace({ question }: Props) {
     const feedbackId = crypto.randomUUID();
     const historyForFeedback = [...messagesRef.current];
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: feedbackId,
-        role: "assistant",
-        content: "",
-      },
-    ]);
+    // The scorecard renders on the dedicated FeedbackScreen (feedback on one
+    // side, signup on the other), NOT as a chat bubble. The #feedback hash is
+    // cosmetic — it gives the end state a page-like URL without a separate
+    // route (a real route change would lose the in-memory session evidence
+    // the generation needs).
+    setFeedbackText("");
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", "#feedback");
+    }
     markStreamStart(feedbackId);
 
     try {
@@ -2215,30 +2220,16 @@ export function InterviewWorkspace({ question }: Props) {
         paceReport: buildPaceReport(),
         codingVoiceReport: buildCodingVoiceReport(transcriptRef.current),
       }, streamAbortRef.current?.signal)) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === feedbackId ? { ...m, content: m.content + chunk } : m
-          )
-        );
+        setFeedbackText((prev) => prev + chunk);
       }
     } catch (e) {
       const errText = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === feedbackId
-            ? {
-                ...m,
-                content: m.content
-                  ? `${m.content}\n\n[Error: ${errText}]`
-                  : `[Error: ${errText}]`,
-              }
-            : m
-        )
+      setFeedbackText((prev) =>
+        prev ? `${prev}\n\n[Error: ${errText}]` : `[Error: ${errText}]`
       );
     } finally {
       setIsStreaming(false);
       clearStreamingId(feedbackId);
-      finalizeAssistantMessage(feedbackId);
       setSessionPersistenceActive(false);
       clearPersistedInterviewSession(question.id);
     }
@@ -2393,6 +2384,14 @@ export function InterviewWorkspace({ question }: Props) {
     runCountRef.current = 0;
     setRunCount(0);
     setSubmitOutcome(null);
+    setFeedbackText("");
+    if (typeof window !== "undefined" && window.location.hash === "#feedback") {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search
+      );
+    }
     pendingSubmitHintRef.current = null;
     lastSubmittedCodeRef.current = null;
     lastSubmitOutcomeRef.current = null;
@@ -2552,6 +2551,14 @@ export function InterviewWorkspace({ question }: Props) {
           </button>
         </div>
       </header>
+      {sessionPhase === "feedback" ? (
+        <FeedbackScreen
+          feedbackText={feedbackText}
+          streaming={isStreaming}
+          questionId={question.id}
+          questionTitle={question.title}
+        />
+      ) : (
       <div className="flex min-h-0 flex-1">
         <div
           className={`flex min-h-0 min-w-0 flex-col transition-[width] duration-200 ease-out ${
@@ -2694,7 +2701,10 @@ export function InterviewWorkspace({ question }: Props) {
           </div>
         )}
       </div>
-      <ChatToggleButton chatOpen={chatOpen} onClick={() => setChatOpen((o) => !o)} />
+      )}
+      {sessionPhase !== "feedback" && (
+        <ChatToggleButton chatOpen={chatOpen} onClick={() => setChatOpen((o) => !o)} />
+      )}
     </div>
   );
 }

@@ -43,6 +43,22 @@ function judge0BaseUrl(): string {
   );
 }
 
+/**
+ * Optional auth header for paid/hosted or self-hosted Judge0. Generic
+ * name/value pair because providers disagree on the header (Sulu uses
+ * Authorization, RapidAPI uses X-RapidAPI-Key, self-hosted uses X-Auth-Token).
+ * With the env vars unset, no header is sent — identical to the public
+ * CE-instance behavior. The value is server-only and never logged.
+ */
+function judge0AuthHeaders(): Record<string, string> {
+  const name = process.env.JUDGE0_AUTH_HEADER_NAME;
+  const value = process.env.JUDGE0_AUTH_HEADER_VALUE;
+  if (!name || !value) {
+    return {};
+  }
+  return { [name]: value };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -163,7 +179,7 @@ async function createSubmission(sourceCode: string): Promise<string> {
     () =>
       fetch(`${base}/submissions?base64_encoded=false&wait=false`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...judge0AuthHeaders() },
         body: JSON.stringify({
           source_code: sourceCode,
           language_id: PYTHON_LANG_ID,
@@ -188,7 +204,7 @@ async function getSubmission(token: string): Promise<Judge0Submission> {
     () =>
       fetch(
         `${base}/submissions/${encodeURIComponent(token)}?base64_encoded=false&fields=stdout,stderr,compile_output,message,status`,
-        { method: "GET" }
+        { method: "GET", headers: judge0AuthHeaders() }
       ),
     (r) => isTransientStatus(r.status)
   );

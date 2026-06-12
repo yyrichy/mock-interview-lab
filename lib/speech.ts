@@ -144,8 +144,12 @@ export function prepareTextForSpeech(text: string): string {
     .slice(0, ELEVENLABS_MAX_TEXT_CHARS);
 }
 
-/** Synthesize Alex's reply via ElevenLabs (server-side, requires ELEVENLABS_API_KEY). */
-export async function synthesizeWithElevenLabs(text: string): Promise<Blob> {
+/**
+ * Synthesize Alex's reply via /api/tts. The server picks the engine (OpenAI
+ * gpt-4o-mini-tts on the metered key, or ElevenLabs when configured); the
+ * BYOK ElevenLabs header is only honored by the ElevenLabs branch.
+ */
+export async function synthesizeAlexVoice(text: string): Promise<Blob> {
   const speechText = prepareTextForSpeech(text);
   if (!speechText) {
     throw new Error("Nothing to speak.");
@@ -166,7 +170,7 @@ export async function synthesizeWithElevenLabs(text: string): Promise<Blob> {
   });
 
   if (!res.ok) {
-    let message = `ElevenLabs text-to-speech failed (${res.status})`;
+    let message = `Text-to-speech failed (${res.status})`;
     try {
       const data = (await res.json()) as { error?: string };
       if (typeof data.error === "string" && data.error) {
