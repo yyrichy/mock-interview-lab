@@ -168,17 +168,10 @@ export function ChatPanel({
     );
   }
 
-  function getFirstAssistantMessage(): ChatMessage | null {
-    return (
-      messages.find(
-        (m) => m.role === "assistant" && m.content.trim().length > 0
-      ) ?? null
-    );
-  }
-
-  function shouldAutoSpeakMessage(message: ChatMessage): boolean {
-    const firstAssistant = getFirstAssistantMessage();
-    return message.id === firstAssistant?.id || sessionPhase === "followUp";
+  function shouldAutoSpeakMessage(): boolean {
+    // Speak every interviewer turn aloud — only the written feedback report
+    // (a long, read-not-heard document) is left for the user to read.
+    return sessionPhase !== "feedback";
   }
 
   function handleAlexVoiceChange(enabled: boolean): void {
@@ -189,7 +182,7 @@ export function ChatPanel({
     }
 
     const latestAssistant = getLatestAssistantMessage();
-    if (latestAssistant && shouldAutoSpeakMessage(latestAssistant)) {
+    if (latestAssistant && shouldAutoSpeakMessage()) {
       lastAutoVoiceMessageIdRef.current = latestAssistant.id;
       void speakAssistantMessage(latestAssistant.content, "manual");
     }
@@ -259,7 +252,7 @@ export function ChatPanel({
     if (
       !latestAssistant ||
       latestAssistant.id === lastAutoVoiceMessageIdRef.current ||
-      !shouldAutoSpeakMessage(latestAssistant)
+      !shouldAutoSpeakMessage()
     ) {
       return;
     }
