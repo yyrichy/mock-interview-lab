@@ -33,6 +33,7 @@ import {
   resolveProviderKey,
 } from "@/lib/resolve-provider-key";
 import type { SessionState } from "@/lib/session-state";
+import { incrementStat } from "@/lib/stats";
 
 export const runtime = "nodejs";
 
@@ -111,6 +112,15 @@ export async function POST(req: NextRequest) {
     const tools = buildTools(stateForTurn);
     const isOpeningTurn = messages.length === 0;
     const toolsForTurn = isOpeningTurn ? {} : tools;
+
+    // Funnel: count session starts on the opening turn. Fire-and-forget and
+    // fail-open (see lib/stats) so it never delays the first token.
+    if (isOpeningTurn) {
+      void incrementStat(
+        "sessions:started",
+        `sessions:started:${stateForTurn.question.id}`
+      );
+    }
 
     if (process.env.NODE_ENV === "development") {
       console.log("[interviewer-agent]", {

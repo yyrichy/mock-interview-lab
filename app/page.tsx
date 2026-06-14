@@ -30,7 +30,7 @@ export default function Home() {
             Alex gives you a problem and listens while you think out loud. Your
             code runs against hidden tests you can&apos;t see. Pass too easily
             and the problem gets harder. At the end you get a written scorecard
-            built from what you actually did — not generic praise.
+            built from what you actually did, not generic praise.
           </p>
 
           <div className="mt-9 flex flex-wrap items-center gap-4">
@@ -48,8 +48,7 @@ export default function Home() {
             </Link>
           </div>
           <p className="mt-4 font-mono text-xs text-zinc-600">
-            free · no account · 30–45 min · mic recommended — Alex listens while
-            you code
+            free · no account · 30–45 min · mic recommended
           </p>
 
           <div className="mt-16 border-t border-zinc-800/80 pt-8 sm:mt-20">
@@ -61,7 +60,7 @@ export default function Home() {
                 <span className="font-mono text-zinc-600">1</span>
                 <span>
                   Clarify and plan. The editor stays locked until you&apos;ve
-                  stated an approach and its complexity — same as a real
+                  stated an approach and its complexity, same as a real
                   on-site.
                 </span>
               </li>
@@ -76,7 +75,7 @@ export default function Home() {
               <li className="flex gap-4">
                 <span className="font-mono text-zinc-600">3</span>
                 <span>
-                  Solve it and the problem mutates — sorted input with O(1)
+                  Solve it and the problem mutates: sorted input with O(1)
                   space, three numbers instead of two. New constraints, new
                   tests, same clock.
                 </span>
@@ -85,7 +84,7 @@ export default function Home() {
                 <span className="font-mono text-zinc-600">4</span>
                 <span>
                   Get a scorecard grounded in the evidence: your transcript, how
-                  your code evolved, every test run, your pacing — and whether
+                  your code evolved, every test run, your pacing, and whether
                   you went quiet while coding.
                 </span>
               </li>
@@ -100,15 +99,15 @@ export default function Home() {
               Chat grades the conversation. This grades the work. It watches
               the editor, executes your code against tests it never shows you,
               and hears the difference between narrating your approach and
-              typing in silence. The feedback cites what happened — &quot;failed
-              the duplicate-value case twice&quot; — because it was there.
+              typing in silence. When the feedback says you failed the
+              duplicate-value case twice, it is because it was there.
             </p>
           </div>
         </main>
 
         <footer className="mt-16 border-t border-zinc-800/80 pt-6 pb-2">
           <p className="font-mono text-xs text-zinc-600">
-            Monaco editor · Judge0 execution · Whisper transcription — not a
+            Monaco editor · Judge0 execution · Whisper transcription · not a
             chat wrapper.
           </p>
         </footer>

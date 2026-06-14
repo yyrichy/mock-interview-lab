@@ -41,6 +41,7 @@ const llmLimiter = makeLimiter("llm", 15, "1 m"); // interviewer turns + feedbac
 const execLimiter = makeLimiter("exec", 12, "1 m"); // judge0 runs/submits
 const speechLimiter = makeLimiter("speech", 40, "1 m"); // whisper chunks + tts
 const signupLimiter = makeLimiter("signup", 5, "1 m");
+const ratingLimiter = makeLimiter("rating", 10, "1 m");
 
 function limiterForPath(pathname: string): Ratelimit | null {
   if (
@@ -60,6 +61,9 @@ function limiterForPath(pathname: string): Ratelimit | null {
   }
   if (pathname.startsWith("/api/signup")) {
     return signupLimiter;
+  }
+  if (pathname.startsWith("/api/rating")) {
+    return ratingLimiter;
   }
   return null;
 }
@@ -102,5 +106,6 @@ export const config = {
     "/api/transcribe",
     "/api/tts",
     "/api/signup",
+    "/api/rating",
   ],
 };

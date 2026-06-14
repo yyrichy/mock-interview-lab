@@ -15,6 +15,7 @@ import {
   streamFeedback,
 } from "@/lib/feedback";
 import { isConcreteInterviewerStyle } from "@/lib/interviewer-presets";
+import { incrementStat } from "@/lib/stats";
 
 export const runtime = "nodejs";
 
@@ -116,6 +117,9 @@ export async function POST(req: Request) {
   if (first.done) {
     return jsonError("The model returned no output.", 502);
   }
+
+  // Funnel: a session reaches feedback exactly once. Fire-and-forget, fail-open.
+  void incrementStat("sessions:finished");
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
