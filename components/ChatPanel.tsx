@@ -107,9 +107,13 @@ export function ChatPanel({
   const [byokOpen, setByokOpen] = useState(false);
   const [alexVoice, setAlexVoice] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("ai-interviewer:alexVoice") === "true";
+      // Default ON for new visitors — voice is the demo's differentiator, so a
+      // stranger should hear Alex without hunting for a toggle. Only an EXPLICIT
+      // stored "false" (a user who turned it off) keeps it off; an absent value
+      // (fresh browser) falls through to ON.
+      return localStorage.getItem("ai-interviewer:alexVoice") !== "false";
     } catch {
-      return false;
+      return true;
     }
   });
   const [ttsStatus, setTtsStatus] =
