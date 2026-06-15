@@ -66,6 +66,35 @@ export function toClientAiFailure(
   };
 }
 
+/**
+ * True when the failure is an OpenAI BILLING exhaustion (`insufficient_quota`),
+ * as opposed to a transient 429 rate-limit — so a momentary spike never latches
+ * the demo into BYOK / at-capacity mode. Scans the error chain plus any
+ * `responseBody` / `code` the provider SDK attaches.
+ */
+export function isInsufficientQuotaError(e: unknown): boolean {
+  const parts: string[] = [extractErrorChainMessage(e)];
+  let cur: unknown = e;
+  let depth = 0;
+  while (cur != null && typeof cur === "object" && depth < 5) {
+    const o = cur as Record<string, unknown>;
+    if (typeof o.responseBody === "string") {
+      parts.push(o.responseBody);
+    }
+    if (typeof o.code === "string") {
+      parts.push(o.code);
+    }
+    cur = "cause" in o ? o.cause : null;
+    depth += 1;
+  }
+  const m = parts.join(" ").toLowerCase();
+  return (
+    m.includes("insufficient_quota") ||
+    m.includes("exceeded your current quota") ||
+    m.includes("check your plan and billing")
+  );
+}
+
 function inferProviderFromMessage(message: string): AiProvider | null {
   const m = message.toLowerCase();
   if (/anthropic|claude/.test(m)) return "anthropic";

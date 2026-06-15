@@ -224,7 +224,7 @@ export function ChatPanel({
         if (ttsRequestIdRef.current === requestId) {
           cleanupAudio();
           setTtsStatus("idle");
-          setTtsError("Could not play ElevenLabs audio.");
+          setTtsError("Could not play Alex's voice audio.");
         }
       };
       await audio.play();
@@ -526,7 +526,7 @@ export function ChatPanel({
         {ttsError && (
           <div className="flex items-start gap-2 rounded-lg border border-amber-900/80 bg-amber-950/40 px-3 py-2 text-xs text-amber-100">
             <p className="min-w-0 flex-1 leading-snug">
-              ElevenLabs voice: {ttsError}
+              Alex voice: {ttsError}
             </p>
             <button
               type="button"

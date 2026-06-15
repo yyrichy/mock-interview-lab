@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 
+import { ByokGate } from "@/components/ByokGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { InterviewWorkspace } from "@/components/InterviewWorkspace";
+import { getByokMode } from "@/lib/byok-mode";
 import { getPublicQuestionById } from "@/lib/questions";
 
 type PageProps = {
@@ -19,9 +21,15 @@ export default async function InterviewPage({ params }: PageProps) {
     notFound();
   }
 
+  // When the demo is at capacity, the gate redirects a keyless visitor to
+  // /at-capacity before the workspace mounts. Off (the default) → passthrough.
+  const byokModeActive = await getByokMode();
+
   return (
     <ErrorBoundary>
-      <InterviewWorkspace question={question} />
+      <ByokGate byokModeActive={byokModeActive} questionId={question.id}>
+        <InterviewWorkspace question={question} />
+      </ByokGate>
     </ErrorBoundary>
   );
 }

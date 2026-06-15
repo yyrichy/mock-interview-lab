@@ -11,6 +11,12 @@ export const runtime = "nodejs";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SUGGESTION_MAX_LENGTH = 2000;
 
+// Which surface the signup came from: the end-of-interview feedback screen vs
+// the at-capacity waitlist. Counted in parallel per-source sets so the operator
+// can tell organic interest from at-capacity demand. Anything else → "unknown".
+const KNOWN_SOURCES = ["feedback", "waitlist"] as const;
+type SignupSource = (typeof KNOWN_SOURCES)[number] | "unknown";
+
 export async function POST(req: Request) {
   if (
     !process.env.UPSTASH_REDIS_REST_URL ||
@@ -31,10 +37,11 @@ export async function POST(req: Request) {
   if (body === null || typeof body !== "object") {
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
-  const { email, suggestion, questionId } = body as {
+  const { email, suggestion, questionId, source } = body as {
     email?: unknown;
     suggestion?: unknown;
     questionId?: unknown;
+    source?: unknown;
   };
   if (typeof email !== "string" || !EMAIL_RE.test(email.trim())) {
     return Response.json({ error: "Invalid email address" }, { status: 400 });
@@ -45,6 +52,11 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+  const normalizedSource: SignupSource =
+    typeof source === "string" &&
+    (KNOWN_SOURCES as readonly string[]).includes(source)
+      ? (source as SignupSource)
+      : "unknown";
   const normalizedEmail = email.trim().toLowerCase();
   const entry = {
     email: normalizedEmail,
@@ -53,13 +65,23 @@ export async function POST(req: Request) {
         ? suggestion.trim().slice(0, SUGGESTION_MAX_LENGTH)
         : "",
     questionId: typeof questionId === "string" ? questionId : null,
+    source: normalizedSource,
     at: new Date().toISOString(),
   };
 
   try {
     const redis = Redis.fromEnv();
     const added = await redis.sadd("signup:emails", normalizedEmail);
-    await redis.lpush("signup:entries", JSON.stringify(entry));
+    const writes: Array<Promise<unknown>> = [
+      redis.lpush("signup:entries", JSON.stringify(entry)),
+    ];
+    // Per-source dedup'd count, parallel to the overall signup:emails set.
+    if (normalizedSource !== "unknown") {
+      writes.push(
+        redis.sadd(`signup:emails:${normalizedSource}`, normalizedEmail)
+      );
+    }
+    await Promise.all(writes);
     return Response.json({ ok: true, alreadySignedUp: added === 0 });
   } catch {
     // Never leak Redis/config details to the client.

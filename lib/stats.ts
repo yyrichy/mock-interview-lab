@@ -43,10 +43,26 @@ export async function recordRating(value: number): Promise<void> {
   }
 }
 
+/**
+ * Count of distinct signup emails (`signup:emails` set) — the landing-page
+ * social-proof number. Fail-open 0 (no Redis / error → render nothing).
+ */
+export async function getSignupCount(): Promise<number> {
+  if (!redis) {
+    return 0;
+  }
+  try {
+    return (await redis.scard("signup:emails")) ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 export type LaunchStats = {
   sessionsStarted: number;
   sessionsFinished: number;
   signups: number;
+  signupsBySource: { feedback: number; waitlist: number };
   ratingCount: number;
   ratingAvg: number | null;
   ratingDistribution: Record<1 | 2 | 3 | 4 | 5, number>;
@@ -72,13 +88,21 @@ export async function readLaunchStats(): Promise<LaunchStats | null> {
         "rating:dist:4",
         "rating:dist:5"
       );
-    const signups = await redis.scard("signup:emails");
+    const [signups, feedbackSignups, waitlistSignups] = await Promise.all([
+      redis.scard("signup:emails"),
+      redis.scard("signup:emails:feedback"),
+      redis.scard("signup:emails:waitlist"),
+    ]);
     const count = ratingCount ?? 0;
     const sum = ratingSum ?? 0;
     return {
       sessionsStarted: started ?? 0,
       sessionsFinished: finished ?? 0,
       signups: signups ?? 0,
+      signupsBySource: {
+        feedback: feedbackSignups ?? 0,
+        waitlist: waitlistSignups ?? 0,
+      },
       ratingCount: count,
       ratingAvg: count > 0 ? Math.round((sum / count) * 100) / 100 : null,
       ratingDistribution: {

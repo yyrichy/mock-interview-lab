@@ -1,6 +1,8 @@
+import { unstable_cache } from "next/cache";
 import Link from "next/link";
 
 import { getAllPublicQuestions, getPublicQuestionById } from "@/lib/questions";
+import { getSignupCount } from "@/lib/stats";
 
 // The CTA drops the visitor straight into an interview — the 30-second path is
 // land → read one screen → Alex says hi. Two Sum is the most battle-tested
@@ -8,7 +10,16 @@ import { getAllPublicQuestions, getPublicQuestionById } from "@/lib/questions";
 // the button never 404s if the bank changes.
 const DEFAULT_QUESTION_ID = "two-sum";
 
-export default function Home() {
+// Social proof doesn't need to be real-time — one Redis read per 5 min, shared
+// across all visitors via Next's data cache.
+const getCachedSignupCount = unstable_cache(
+  () => getSignupCount(),
+  ["landing-signup-count"],
+  { revalidate: 300 }
+);
+
+export default async function Home() {
+  const signupCount = await getCachedSignupCount();
   const defaultQuestion =
     getPublicQuestionById(DEFAULT_QUESTION_ID) ?? getAllPublicQuestions()[0];
   const startHref = defaultQuestion
@@ -50,6 +61,15 @@ export default function Home() {
           <p className="mt-4 font-mono text-xs text-zinc-600">
             free · no account · 30–45 min · mic recommended
           </p>
+          {signupCount > 10 && (
+            <p className="mt-4 text-sm text-zinc-400">
+              Join{" "}
+              <span className="font-medium text-zinc-200">
+                {signupCount.toLocaleString()}
+              </span>{" "}
+              people who&apos;ve practiced with Alex.
+            </p>
+          )}
 
           <div className="mt-16 border-t border-zinc-800/80 pt-8 sm:mt-20">
             <h2 className="font-mono text-xs uppercase tracking-widest text-zinc-500">

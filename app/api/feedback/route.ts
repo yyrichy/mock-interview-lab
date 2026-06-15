@@ -4,8 +4,9 @@
 // model tool call. This is the only remaining non-conversational AI route; all
 // turn-by-turn conversation goes through POST /api/interviewer.
 
-import { toClientAiFailure } from "@/lib/ai-errors";
+import { isInsufficientQuotaError, toClientAiFailure } from "@/lib/ai-errors";
 import { type AiModelConfig, getAiModelConfig } from "@/lib/ai-models";
+import { setByokMode } from "@/lib/byok-mode";
 import type { ChatMessage } from "@/lib/chat";
 import type { CodingVoiceReport } from "@/lib/coding-voice-report";
 import {
@@ -136,6 +137,9 @@ export async function POST(req: Request) {
   try {
     first = await gen.next();
   } catch (e: unknown) {
+    if (isInsufficientQuotaError(e)) {
+      void setByokMode(true);
+    }
     const { message, status } = toClientAiFailure(e, {
       provider: aiModelConfig.provider,
     });
@@ -158,6 +162,9 @@ export async function POST(req: Request) {
         }
         controller.close();
       } catch (e: unknown) {
+        if (isInsufficientQuotaError(e)) {
+          void setByokMode(true);
+        }
         const { message } = toClientAiFailure(e, {
           provider: aiModelConfig.provider,
         });

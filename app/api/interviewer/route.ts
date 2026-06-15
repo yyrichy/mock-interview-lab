@@ -17,10 +17,12 @@ import {
 } from "ai";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { isInsufficientQuotaError } from "@/lib/ai-errors";
 import {
   DEFAULT_AI_MODEL_PRESET_ID,
   getAiModelConfig,
 } from "@/lib/ai-models";
+import { getByokMode, setByokMode } from "@/lib/byok-mode";
 import type { ChatMessage, TranscriptEntry } from "@/lib/chat";
 import { INTERVIEWER_MAX_OUTPUT_TOKENS } from "@/lib/interview-limits";
 import { getInterviewerLanguageModel } from "@/lib/interviewer-model";
@@ -31,6 +33,7 @@ import {
 import { buildTools } from "@/lib/interviewer-tools";
 import { getQuestionById } from "@/lib/questions";
 import {
+  keyMatchesProvider,
   MissingProviderKeyError,
   resolveProviderKey,
 } from "@/lib/resolve-provider-key";
@@ -125,6 +128,24 @@ export async function POST(req: NextRequest) {
     const isOpeningTurn = messages.length === 0;
     const toolsForTurn = isOpeningTurn ? {} : tools;
 
+    // BYOK / at-capacity gate (defense-in-depth; the client ByokGate is the
+    // primary UX). On a NEW interview, if the demo is at capacity and the
+    // visitor brought no valid OpenAI key, refuse rather than spend the dead
+    // server key. Only the opening turn pays the Redis read; mid-interview
+    // turns, BYOK-key requests, and non-OpenAI providers skip it entirely.
+    const hasValidOpenAiHeader =
+      modelConfig.provider === "openai" &&
+      typeof byokKey === "string" &&
+      keyMatchesProvider("openai", byokKey);
+    if (
+      isOpeningTurn &&
+      modelConfig.provider === "openai" &&
+      !hasValidOpenAiHeader &&
+      (await getByokMode())
+    ) {
+      return NextResponse.json({ error: "at_capacity" }, { status: 503 });
+    }
+
     // Funnel: count session starts on the opening turn. Fire-and-forget and
     // fail-open (see lib/stats) so it never delays the first token.
     if (isOpeningTurn) {
@@ -202,6 +223,11 @@ export async function POST(req: NextRequest) {
           },
           abortSignal: req.signal,
           onError({ error }) {
+            // OpenAI billing exhaustion → latch BYOK / at-capacity mode so new
+            // interviews route to /at-capacity instead of dying on the dead key.
+            if (isInsufficientQuotaError(error)) {
+              void setByokMode(true);
+            }
             if (process.env.NODE_ENV === "development") {
               console.error("[interviewer-agent] stream error", error);
               if (error && typeof error === "object") {

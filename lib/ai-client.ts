@@ -1,9 +1,25 @@
 "use client";
 
-import { getAiModelConfig } from "@/lib/ai-models";
+import { getAiModelConfig, type AiProvider } from "@/lib/ai-models";
 import { loadProviderKeys } from "@/lib/byok";
+import { getSessionOpenAiKey } from "@/lib/byok-session";
 import type { ChatMessage, TranscriptEntry } from "@/lib/chat";
 import type { SessionState } from "@/lib/session-state";
+
+/**
+ * The BYOK key to forward as `x-provider-key` for a provider. In at-capacity
+ * mode the visitor's OpenAI key lives in sessionStorage and must win for OpenAI
+ * calls; otherwise fall back to the long-lived localStorage BYOK key.
+ */
+function clientKeyForProvider(provider: AiProvider): string | undefined {
+  if (provider === "openai") {
+    const sessionKey = getSessionOpenAiKey();
+    if (sessionKey) {
+      return sessionKey;
+    }
+  }
+  return loadProviderKeys()[provider];
+}
 
 /**
  * POST /api/feedback and yield decoded UTF-8 chunks from the plain-text response
@@ -26,8 +42,7 @@ export async function* streamFeedbackApi(
   if (presetId) {
     const config = getAiModelConfig(presetId);
     if (config) {
-      const keys = loadProviderKeys();
-      const key = keys[config.provider];
+      const key = clientKeyForProvider(config.provider);
       if (key) {
         headers["x-provider-key"] = key;
       }
@@ -119,8 +134,7 @@ export async function* streamInterviewerApi(
 
   const config = getAiModelConfig(body.modelPresetId);
   if (config) {
-    const keys = loadProviderKeys();
-    const key = keys[config.provider];
+    const key = clientKeyForProvider(config.provider);
     if (key) {
       headers["x-provider-key"] = key;
     }

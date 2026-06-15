@@ -120,6 +120,7 @@ function SignupCard({ questionId }: { questionId: string }) {
           email: trimmed,
           suggestion: suggestion.trim() || undefined,
           questionId,
+          source: "feedback",
         }),
       });
       if (!res.ok) {
