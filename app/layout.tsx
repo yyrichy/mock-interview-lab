@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ai-interviewer",
-  description: "A FAANG-style coding interview simulator. Code in a real editor, talk through your approach, and get structured feedback from an AI interviewer.",
+  description: "A coding interview simulator. Code in a real editor, talk through your approach, and get structured feedback from an AI interviewer.",
 };
 
 export default function RootLayout({

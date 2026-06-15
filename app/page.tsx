@@ -59,7 +59,7 @@ export default async function Home() {
             </Link>
           </div>
           <p className="mt-4 font-mono text-xs text-zinc-600">
-            free · no account · 30–45 min · mic recommended
+            free · no account · 30-45 min · mic recommended
           </p>
           {signupCount > 10 && (
             <p className="mt-4 text-sm text-zinc-400">
@@ -95,9 +95,8 @@ export default async function Home() {
               <li className="flex gap-4">
                 <span className="font-mono text-zinc-600">3</span>
                 <span>
-                  Solve it and the problem mutates: sorted input with O(1)
-                  space, three numbers instead of two. New constraints, new
-                  tests, same clock.
+                  Solve it and the problem escalates into a harder variant with
+                  new constraints and fresh tests, on the same clock.
                 </span>
               </li>
               <li className="flex gap-4">
@@ -119,8 +118,8 @@ export default async function Home() {
               Chat grades the conversation. This grades the work. It watches
               the editor, executes your code against tests it never shows you,
               and hears the difference between narrating your approach and
-              typing in silence. When the feedback says you failed the
-              duplicate-value case twice, it is because it was there.
+              typing in silence. When the feedback says you failed a hidden
+              edge case twice, it is because it was there.
             </p>
           </div>
         </main>

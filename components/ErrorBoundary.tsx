@@ -34,7 +34,7 @@ export class ErrorBoundary extends Component<Props, State> {
           </h2>
           <p className="mb-4 text-zinc-400">
             The interview session hit an unexpected error. Your chat and code
-            may still be intact — try reloading. If it keeps happening, copy
+            may still be intact. Try reloading. If it keeps happening, copy
             the message below and check the dev console.
           </p>
           <pre className="mb-4 max-h-40 overflow-auto rounded bg-zinc-950 p-2 text-[11px] text-rose-200">

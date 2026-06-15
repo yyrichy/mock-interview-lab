@@ -26,8 +26,6 @@ import type {
 import {
   AI_MODEL_PRESET_STORAGE_KEY,
   DEFAULT_AI_MODEL_PRESET_ID,
-  DEFAULT_UTILITY_MODEL_PRESET_ID,
-  UTILITY_MODEL_PRESET_STORAGE_KEY,
   isAiModelPresetId,
   type AiModelPresetId,
 } from "@/lib/ai-models";
@@ -270,12 +268,6 @@ export function InterviewWorkspace({ question }: Props) {
     (raw) => (isAiModelPresetId(raw) ? raw : null)
   );
   const modelPresetIdRef = useRef(modelPresetId);
-  const [utilityModelPresetId, setUtilityModelPresetId] =
-    usePersistedState<AiModelPresetId>(
-      UTILITY_MODEL_PRESET_STORAGE_KEY,
-      DEFAULT_UTILITY_MODEL_PRESET_ID,
-      (raw) => (isAiModelPresetId(raw) ? raw : null)
-    );
   const sessionPhaseRef = useRef<SessionPhase>(sessionPhase);
   const isStreamingRef = useRef(isStreaming);
   const focusedMicRef = useRef(false);
@@ -821,7 +813,7 @@ export function InterviewWorkspace({ question }: Props) {
           ? {
               ...m,
               content:
-                "[Alex didn't send a reply — try again or switch model.]",
+                "[Alex didn't send a reply. Try again or switch model.]",
             }
           : m
       )
@@ -2518,7 +2510,7 @@ export function InterviewWorkspace({ question }: Props) {
             {sessionPhase === "coding"
               ? "Ctrl+Enter run tests · Ctrl+D mark done"
               : sessionPhase === "followUp"
-                ? "Follow-up questions — reply in chat, then continue to final feedback"
+                ? "Follow-up questions: reply in chat, then continue to final feedback"
                 : "\u00a0"}
           </p>
         </div>
@@ -2591,7 +2583,7 @@ export function InterviewWorkspace({ question }: Props) {
                   <span className="mr-auto text-[11px] text-zinc-500">
                     {runMode !== "dry-run"
                       ? "Run = visible self-check · Submit (in chat) = full evaluation"
-                      : "Trace mode — no execution"}
+                      : "Trace mode (no execution)"}
                   </span>
                   <label className="flex items-center gap-1 text-[11px] text-zinc-500">
                     Mode:
@@ -2619,7 +2611,7 @@ export function InterviewWorkspace({ question }: Props) {
                         (runMode === "limited" && runCount >= MAX_LIMITED_RUNS) ||
                         runCount >= TEST_RUNS_MAX
                       }
-                      title="Run the visible example tests only — a private self-check. Use Submit (in the chat panel) to be evaluated."
+                      title="Run the visible example tests only: a private self-check. Use Submit (in the chat panel) to be evaluated."
                       className="rounded-md border border-emerald-600/70 bg-emerald-950/40 px-3 py-1.5 text-sm font-medium text-emerald-100 transition hover:bg-emerald-900/50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {testRunLoading
@@ -2667,8 +2659,6 @@ export function InterviewWorkspace({ question }: Props) {
               messages={messages}
               modelPresetId={modelPresetId}
               onModelPresetIdChange={setModelPresetId}
-              utilityModelPresetId={utilityModelPresetId}
-              onUtilityModelPresetIdChange={setUtilityModelPresetId}
               padRealism={padRealism}
               onPadRealismChange={setPadRealism}
               humanLatency={humanLatency}

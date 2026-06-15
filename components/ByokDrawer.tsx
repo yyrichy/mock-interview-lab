@@ -58,7 +58,7 @@ export function ByokDrawer({ onClose }: Props) {
 
         <p className="mb-4 text-[11px] leading-relaxed text-zinc-500">
           Keys are stored only in your browser&apos;s localStorage and sent via a
-          request header — never logged or persisted by the server. Leave a field
+          request header, never logged or persisted by the server. Leave a field
           empty to fall back to the server&apos;s environment key.
         </p>
 

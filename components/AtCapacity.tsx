@@ -36,7 +36,7 @@ export function AtCapacity({ questionId }: { questionId: string }) {
   function handleUseKey(e: React.FormEvent) {
     e.preventDefault();
     if (!isLikelyOpenAiKey(key)) {
-      setKeyError("That doesn't look like an OpenAI key — it should start with sk-.");
+      setKeyError("That doesn't look like an OpenAI key. It should start with sk-.");
       return;
     }
     // Write into the shared localStorage BYOK store (same one the in-interview

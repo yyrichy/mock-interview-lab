@@ -31,7 +31,7 @@ export default function QuestionsPage() {
             Pick a problem
           </h1>
           <p className="mt-2 text-sm text-zinc-500">
-            Each one starts a full mock interview — live editor, voice, hidden
+            Each one starts a full mock interview: live editor, voice, hidden
             tests, follow-ups, and a written scorecard.
           </p>
         </header>

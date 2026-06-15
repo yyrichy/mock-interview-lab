@@ -20,8 +20,6 @@ type Props = {
   messages: ChatMessage[];
   modelPresetId: AiModelPresetId;
   onModelPresetIdChange: (id: AiModelPresetId) => void;
-  utilityModelPresetId: AiModelPresetId;
-  onUtilityModelPresetIdChange: (id: AiModelPresetId) => void;
   padRealism: boolean;
   onPadRealismChange: (v: boolean) => void;
   humanLatency: boolean;
@@ -72,8 +70,6 @@ export function ChatPanel({
   messages,
   modelPresetId,
   onModelPresetIdChange,
-  utilityModelPresetId,
-  onUtilityModelPresetIdChange,
   padRealism,
   onPadRealismChange,
   humanLatency,
@@ -105,6 +101,9 @@ export function ChatPanel({
   const [draft, setDraft] = useState("");
   const [micHeld, setMicHeld] = useState(false);
   const [byokOpen, setByokOpen] = useState(false);
+  // Ambient transcript is collapsed by default so it doesn't clutter the coding
+  // view; the candidate expands it with the chevron when they want to read back.
+  const [voiceLogOpen, setVoiceLogOpen] = useState(false);
   const [alexVoice, setAlexVoice] = useState<boolean>(() => {
     try {
       // Default ON for new visitors — voice is the demo's differentiator, so a
@@ -304,7 +303,7 @@ export function ChatPanel({
                 type="button"
                 onClick={() => setByokOpen(true)}
                 className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
-                title="Bring Your Own Key — set per-provider API keys"
+                title="Bring Your Own Key: set per-provider API keys"
               >
                 API Keys
               </button>
@@ -315,10 +314,10 @@ export function ChatPanel({
                   ? sliceGraceReply
                     ? "Reply to Alex, or continue below when ready"
                     : followUpSealed
-                      ? "Review complete — continue below"
+                      ? "Review complete, continue below"
                       : "Discuss this implementation (one question at a time)"
                   : followUpSealed
-                    ? "Follow-ups complete — continue below for written feedback"
+                    ? "Follow-ups complete, continue below for written feedback"
                     : "Final follow-up questions (one at a time)"
                 : sessionPhase === "feedback"
                   ? "Structured feedback"
@@ -340,26 +339,6 @@ export function ChatPanel({
                 disabled={inputDisabled}
                 className="max-w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Interviewer AI model"
-              >
-                {AI_MODEL_OPTIONS.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex shrink-0 flex-col gap-0.5">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                Utility
-              </span>
-              <select
-                value={utilityModelPresetId}
-                onChange={(e) =>
-                  onUtilityModelPresetIdChange(e.target.value as AiModelPresetId)
-                }
-                disabled={inputDisabled}
-                className="max-w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label="Utility AI model (openers, closers, summaries)"
               >
                 {AI_MODEL_OPTIONS.map((opt) => (
                   <option key={opt.id} value={opt.id}>
@@ -482,39 +461,68 @@ export function ChatPanel({
 
         {sessionPhase === "coding" && speechSupported && (
           <div className="mt-4 border-t border-zinc-800 pt-3">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-              Your voice (thinking aloud)
-            </p>
-            <p className="mt-1 text-[11px] text-zinc-600">
-              Captured in ~30s chunks via Groq Whisper. Shown here for your
-              reference; the interviewer only sees chat messages you send or
-              dictate with the mic button.
-            </p>
-            {ambientTranscript.length === 0 && liveCaption.length === 0 && (
-              <p className="mt-3 text-sm leading-relaxed text-zinc-500">
+            <button
+              type="button"
+              onClick={() => setVoiceLogOpen((v) => !v)}
+              aria-expanded={voiceLogOpen}
+              className="flex w-full items-center gap-1.5 text-left text-zinc-500 transition hover:text-zinc-300"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden
+                className={`h-3 w-3 shrink-0 transition-transform ${
+                  voiceLogOpen ? "rotate-90" : ""
+                }`}
+              >
+                <path d="M16.28 11.47a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 0 1-1.06-1.06L14.69 12 7.72 5.03a.75.75 0 0 1 1.06-1.06l7.5 7.5Z" />
+              </svg>
+              <span className="text-[11px] font-medium uppercase tracking-wide">
+                Your voice (thinking aloud)
+              </span>
+              {!voiceLogOpen && backgroundListeningActive && (
                 <span
-                  className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/70 animate-pulse align-middle mr-2"
+                  className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500/70 animate-pulse"
                   aria-hidden
+                  title="Listening"
                 />
-                Listening… first chunk transcribes after ~30s.
-              </p>
-            )}
-            {ambientTranscript.length > 0 && (
-              <ul className="mt-2 flex flex-col gap-1.5 text-sm text-zinc-300">
-                {ambientTranscript.map((e, i) => (
-                  <li
-                    key={`${e.timestamp}-${i}`}
-                    className="whitespace-pre-wrap"
-                  >
-                    {e.text}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {liveCaption.length > 0 && (
-              <p className="mt-2 border-l-2 border-emerald-600/60 pl-2 text-sm italic text-zinc-400">
-                {liveCaption}
-              </p>
+              )}
+            </button>
+            {voiceLogOpen && (
+              <>
+                <p className="mt-1 text-[11px] text-zinc-600">
+                  Captured in ~30s chunks. Shown here for your reference; the
+                  interviewer only sees chat messages you send or dictate with
+                  the mic button.
+                </p>
+                {ambientTranscript.length === 0 && liveCaption.length === 0 && (
+                  <p className="mt-3 text-sm leading-relaxed text-zinc-500">
+                    <span
+                      className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/70 animate-pulse align-middle mr-2"
+                      aria-hidden
+                    />
+                    Listening… first chunk transcribes after ~30s.
+                  </p>
+                )}
+                {ambientTranscript.length > 0 && (
+                  <ul className="mt-2 flex flex-col gap-1.5 text-sm text-zinc-300">
+                    {ambientTranscript.map((e, i) => (
+                      <li
+                        key={`${e.timestamp}-${i}`}
+                        className="whitespace-pre-wrap"
+                      >
+                        {e.text}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {liveCaption.length > 0 && (
+                  <p className="mt-2 border-l-2 border-emerald-600/60 pl-2 text-sm italic text-zinc-400">
+                    {liveCaption}
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}
@@ -556,7 +564,7 @@ export function ChatPanel({
               aria-hidden
             />
             <span>
-              Groq Whisper listening — transcribed in 30s chunks
+              Listening (transcribed in 30s chunks)
             </span>
           </div>
         )}
@@ -565,7 +573,7 @@ export function ChatPanel({
             className="rounded-md border border-amber-500/50 bg-amber-950/30 px-2 py-1.5 text-center text-xs font-medium text-amber-100"
             role="status"
           >
-            Transcribing via Groq Whisper…
+            Transcribing…
           </div>
         )}
         {micHeld && (
@@ -573,7 +581,7 @@ export function ChatPanel({
             className="rounded-md border border-sky-500/60 bg-sky-950/40 px-2 py-1.5 text-center text-xs font-medium text-sky-200"
             role="status"
           >
-            <p>Hold to record — release to transcribe</p>
+            <p>Hold to record, release to transcribe</p>
             {liveCaption.length > 0 && (
               <p className="mt-1 text-left font-normal text-sky-100/90">
                 {liveCaption}
@@ -595,7 +603,7 @@ export function ChatPanel({
             title="Unlock the editor if Alex already told you to start coding."
             className="w-full rounded-lg border border-emerald-700/70 bg-emerald-950/40 px-4 py-2.5 text-sm font-medium text-emerald-50 transition hover:border-emerald-500 hover:bg-emerald-900/50 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Open editor — start coding
+            Open editor to start coding
           </button>
         )}
         {sessionPhase === "coding" && (
@@ -607,7 +615,7 @@ export function ChatPanel({
               title={
                 submitDisabled
                   ? submitDisabledReason
-                  : "Submit for evaluation — runs the hidden tests and has Alex review your solution"
+                  : "Submit for evaluation: runs the hidden tests and has Alex review your solution"
               }
               className="w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition enabled:hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
