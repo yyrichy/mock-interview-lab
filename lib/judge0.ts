@@ -51,12 +51,20 @@ function judge0BaseUrl(): string {
  * CE-instance behavior. The value is server-only and never logged.
  */
 function judge0AuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
   const name = process.env.JUDGE0_AUTH_HEADER_NAME;
   const value = process.env.JUDGE0_AUTH_HEADER_VALUE;
-  if (!name || !value) {
-    return {};
+  if (name && value) {
+    headers[name] = value;
   }
-  return { [name]: value };
+  // RapidAPI's gateway also requires X-RapidAPI-Host alongside X-RapidAPI-Key to
+  // route the request; without it the gateway returns 403 "not subscribed".
+  // Self-hosted/Sulu users leave this unset and are unaffected.
+  const rapidApiHost = process.env.JUDGE0_RAPIDAPI_HOST;
+  if (rapidApiHost) {
+    headers["X-RapidAPI-Host"] = rapidApiHost;
+  }
+  return headers;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -173,6 +181,25 @@ function describeFailure(sub: Judge0Submission): string {
   return parts.filter(Boolean).join("\n\n");
 }
 
+/** Map a finished Judge0 submission back to a TestResult for its test case. */
+function toTestResult(tc: TestCase, sub: Judge0Submission): TestResult {
+  if (sub.status?.id === 3 && sub.stdout != null) {
+    const actual = sub.stdout.trim();
+    return {
+      input: tc.input,
+      expected: tc.expected,
+      actual,
+      passed: outputsMatch(actual, tc.expected),
+    };
+  }
+  return {
+    input: tc.input,
+    expected: tc.expected,
+    actual: describeFailure(sub),
+    passed: false,
+  };
+}
+
 async function createSubmission(sourceCode: string): Promise<string> {
   const base = judge0BaseUrl();
   const res = await withRetry(
@@ -231,7 +258,92 @@ async function waitForSubmission(token: string): Promise<Judge0Submission> {
   throw new Error("Judge0 execution timed out");
 }
 
-async function runTestCases(
+/**
+ * Create all submissions in one batch POST. Returns tokens in the same order as
+ * the input sources (Judge0 preserves order). Throws if the instance rejects the
+ * batch endpoint, so the caller can fall back to one-at-a-time submissions.
+ */
+async function createSubmissionBatch(sourceCodes: string[]): Promise<string[]> {
+  const base = judge0BaseUrl();
+  const res = await withRetry(
+    () =>
+      fetch(`${base}/submissions/batch?base64_encoded=false`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...judge0AuthHeaders() },
+        body: JSON.stringify({
+          submissions: sourceCodes.map((source_code) => ({
+            source_code,
+            language_id: PYTHON_LANG_ID,
+          })),
+        }),
+      }),
+    (r) => isTransientStatus(r.status)
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `Judge0 batch create failed (${res.status}): ${text.slice(0, 200)}`
+    );
+  }
+  const data = (await res.json()) as Array<{ token?: string }>;
+  if (!Array.isArray(data) || data.length !== sourceCodes.length) {
+    throw new Error("Judge0 batch create returned an unexpected token list");
+  }
+  const tokens = data.map((d) => d.token);
+  if (tokens.some((t) => typeof t !== "string")) {
+    throw new Error("Judge0 batch create returned a submission without a token");
+  }
+  return tokens as string[];
+}
+
+async function getSubmissionBatch(
+  tokens: string[]
+): Promise<Judge0Submission[]> {
+  const base = judge0BaseUrl();
+  const joined = tokens.map((t) => encodeURIComponent(t)).join(",");
+  const res = await withRetry(
+    () =>
+      fetch(
+        `${base}/submissions/batch?tokens=${joined}&base64_encoded=false&fields=stdout,stderr,compile_output,message,status`,
+        { method: "GET", headers: judge0AuthHeaders() }
+      ),
+    (r) => isTransientStatus(r.status)
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `Judge0 batch poll failed (${res.status}): ${text.slice(0, 200)}`
+    );
+  }
+  const data = (await res.json()) as { submissions?: Judge0Submission[] };
+  if (
+    !Array.isArray(data.submissions) ||
+    data.submissions.length !== tokens.length
+  ) {
+    throw new Error("Judge0 batch poll returned an unexpected submission list");
+  }
+  return data.submissions;
+}
+
+async function waitForSubmissionBatch(
+  tokens: string[]
+): Promise<Judge0Submission[]> {
+  const maxAttempts = 45;
+  for (let i = 0; i < maxAttempts; i++) {
+    const subs = await getSubmissionBatch(tokens);
+    const allDone = subs.every((sub) => {
+      const sid = sub.status?.id;
+      return sid !== undefined && !isProcessingStatus(sid);
+    });
+    if (allDone) {
+      return subs;
+    }
+    await sleep(350);
+  }
+  throw new Error("Judge0 batch execution timed out");
+}
+
+async function runTestCasesSequential(
   code: string,
   testCases: TestCase[],
   entryFunction: string
@@ -241,15 +353,41 @@ async function runTestCases(
     const source = buildHarnessedSource(code, tc.input, entryFunction);
     const token = await createSubmission(source);
     const sub = await waitForSubmission(token);
-    const statusId = sub.status.id;
-    if (statusId === 3 && sub.stdout != null) {
-      const actual = sub.stdout.trim();
-      results.push({ input: tc.input, expected: tc.expected, actual, passed: outputsMatch(actual, tc.expected) });
-    } else {
-      results.push({ input: tc.input, expected: tc.expected, actual: describeFailure(sub), passed: false });
-    }
+    results.push(toTestResult(tc, sub));
   }
   return results;
+}
+
+/**
+ * Run all test cases as a single Judge0 batch (one POST + shared polling) rather
+ * than one submission per case — fewer round-trips and faster. Falls back to
+ * sequential submissions if the instance does not support the batch endpoint, so
+ * the result is identical everywhere.
+ */
+async function runTestCases(
+  code: string,
+  testCases: TestCase[],
+  entryFunction: string
+): Promise<TestResult[]> {
+  if (testCases.length === 0) {
+    return [];
+  }
+  const sources = testCases.map((tc) =>
+    buildHarnessedSource(code, tc.input, entryFunction)
+  );
+  try {
+    const tokens = await createSubmissionBatch(sources);
+    const subs = await waitForSubmissionBatch(tokens);
+    return testCases.map((tc, i) => toTestResult(tc, subs[i]));
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        "Judge0 batch submission failed; falling back to sequential.",
+        err
+      );
+    }
+    return runTestCasesSequential(code, testCases, entryFunction);
+  }
 }
 
 /**
