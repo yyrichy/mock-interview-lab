@@ -3,21 +3,23 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 
-import { getSessionOpenAiKey } from "@/lib/byok-session";
+import { loadProviderKeys } from "@/lib/byok";
 
-// sessionStorage doesn't change underneath a gate decision, so subscribe no-ops;
+// localStorage doesn't change underneath a gate decision, so subscribe no-ops;
 // the snapshot just reads the key presence once per render.
 const noopSubscribe = () => () => {};
 
 /**
  * Gates the interview workspace when the demo is in BYOK / at-capacity mode.
- * A visitor with no own key in sessionStorage is redirected to /at-capacity
- * BEFORE InterviewWorkspace mounts, so the opening turn never fires on the
- * server key. When BYOK is off this is a transparent passthrough.
+ * A visitor with no OpenAI key (in the shared localStorage BYOK store the API
+ * Keys drawer also uses) is redirected to /at-capacity BEFORE
+ * InterviewWorkspace mounts, so the opening turn never fires on the server key.
+ * When BYOK is off this is a transparent passthrough. A self-hoster who already
+ * set their own key in the drawer is therefore never gated.
  *
- * The key is client-only (sessionStorage), so we read it via
- * useSyncExternalStore — the server snapshot is "no key", which avoids a
- * hydration mismatch — and show a brief placeholder until the client confirms.
+ * The key is client-only (localStorage), so we read it via useSyncExternalStore
+ * — the server snapshot is "no key", which avoids a hydration mismatch — and
+ * show a brief placeholder until the client confirms.
  */
 export function ByokGate({
   byokModeActive,
@@ -31,7 +33,7 @@ export function ByokGate({
   const router = useRouter();
   const hasKey = useSyncExternalStore(
     noopSubscribe,
-    () => getSessionOpenAiKey() != null,
+    () => Boolean(loadProviderKeys().openai),
     () => false
   );
   const allowed = !byokModeActive || hasKey;

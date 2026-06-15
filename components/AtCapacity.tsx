@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { setSessionOpenAiKey } from "@/lib/byok-session";
+import { loadProviderKeys, saveProviderKeys } from "@/lib/byok";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -39,7 +39,10 @@ export function AtCapacity({ questionId }: { questionId: string }) {
       setKeyError("That doesn't look like an OpenAI key — it should start with sk-.");
       return;
     }
-    setSessionOpenAiKey(key);
+    // Write into the shared localStorage BYOK store (same one the in-interview
+    // API Keys drawer reads/writes), so it's a single source of truth and the
+    // key can be changed or cleared from the drawer at any time.
+    saveProviderKeys({ ...loadProviderKeys(), openai: key.trim() });
     router.push(`/interview/${questionId}`);
   }
 
@@ -107,8 +110,10 @@ export function AtCapacity({ questionId }: { questionId: string }) {
                 Continue with your own OpenAI key
               </h2>
               <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-400">
-                Your key stays in this browser tab and is sent only with your own
-                interview requests. We never store it on our servers. Get one at{" "}
+                Your key is saved in this browser only (never on our servers) and
+                sent just with your own interview requests. You can change or
+                remove it anytime from the API Keys panel during the interview.
+                Get one at{" "}
                 <a
                   href="https://platform.openai.com/api-keys"
                   target="_blank"

@@ -5,7 +5,6 @@
  * the server round-trip is more reliable and works the same across browsers.
  */
 import { loadProviderKeys } from "@/lib/byok";
-import { getSessionOpenAiKey } from "@/lib/byok-session";
 
 const ELEVENLABS_MAX_TEXT_CHARS = 2200;
 
@@ -113,10 +112,9 @@ export async function transcribeWithGroqWhisper(blob: Blob): Promise<string> {
 
   const headers: Record<string, string> = {};
   const keys = loadProviderKeys();
-  // At-capacity (BYOK) mode: the visitor's own OpenAI key powers transcription.
-  const openAiKey = getSessionOpenAiKey() ?? keys.openai;
-  if (openAiKey) {
-    headers["x-provider-key"] = openAiKey;
+  // BYOK: a localStorage OpenAI key powers transcription on the user's account.
+  if (keys.openai) {
+    headers["x-provider-key"] = keys.openai;
   }
 
   const res = await fetch("/api/transcribe", {
@@ -162,11 +160,10 @@ export async function synthesizeAlexVoice(text: string): Promise<Blob> {
     "Content-Type": "application/json",
   };
   const keys = loadProviderKeys();
-  // At-capacity (BYOK) mode: the visitor's OpenAI key drives OpenAI TTS.
-  // Otherwise forward any BYOK ElevenLabs key for the ElevenLabs branch.
-  const sessionOpenAiKey = getSessionOpenAiKey();
-  if (sessionOpenAiKey) {
-    headers["x-provider-key"] = sessionOpenAiKey;
+  // Forward the BYOK OpenAI key for OpenAI TTS (the default engine); fall back
+  // to a BYOK ElevenLabs key for the ElevenLabs engine.
+  if (keys.openai) {
+    headers["x-provider-key"] = keys.openai;
   } else if (keys.elevenlabs) {
     headers["x-provider-key"] = keys.elevenlabs;
   }
