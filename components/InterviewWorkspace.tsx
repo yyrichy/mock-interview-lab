@@ -2219,6 +2219,15 @@ export function InterviewWorkspace({ question }: Props) {
         ...(traceContent.trim() ? { traceContent: traceContent.trim() } : {}),
         paceReport: buildPaceReport(),
         codingVoiceReport: buildCodingVoiceReport(transcriptRef.current),
+        // The follow-up variants actually reached this session, in order, so the
+        // feedback judges the final code (which belongs to the LAST variant, a
+        // different problem) against the right spec — not the baseline.
+        followUpVariants: (question.followUps ?? [])
+          .slice(0, followUpsReachedCountRef.current)
+          .map((f) => ({
+            prompt: f.prompt,
+            ...(f.entryFunction ? { entryFunction: f.entryFunction } : {}),
+          })),
       }, streamAbortRef.current?.signal)) {
         setFeedbackText((prev) => prev + chunk);
       }

@@ -29,6 +29,21 @@ export type FeedbackSnapshot = {
   timestamp: number;
 };
 
+/**
+ * A follow-up variant the interviewer actually assigned this session, in order.
+ * Without this the feedback generator only sees the baseline problem + the final
+ * editor code — and since the final code belongs to the LAST variant (a
+ * different problem), it wrongly reads as the candidate "drifting off" the
+ * baseline. Passing the assigned variants lets it judge each piece of code
+ * against the task that was actually in play.
+ */
+export type FeedbackFollowUpVariant = {
+  /** The prompt the interviewer delivered to introduce this variant. */
+  prompt: string;
+  /** Graded Python entry function for the variant, when it differs from baseline. */
+  entryFunction?: string;
+};
+
 export type PaceReport = {
   /** Minutes from coding start to first fully-passing visible-test run. null if tests never passed. */
   baselineMinutes: number | null;
@@ -67,6 +82,7 @@ Use these exact section headings (## markdown), each followed by your analysis:
 ## What to improve
 ## Score
 
+- **Variant-aware correctness (critical):** If the candidate data below describes assigned follow-up variants, this session moved through MORE than one problem. The interviewer escalated the candidate from the baseline into those variants on purpose. The final code — and any late code snapshots — are the candidate's solution to the LAST assigned variant, which is a DIFFERENT problem from the baseline with its own contract and its own graded tests. Judge the final code's correctness against that last variant's spec, NOT the baseline. Never describe an assigned variant as the candidate "drifting", "switching to an unrelated problem", or "failing to solve the original" — it was assigned. Solving the baseline correctly earlier still counts even though the final editor code is a later variant. Likewise, judge each snapshot against whichever task was active at that point (e.g. a sorted-array two-pointer variant is correct for the sorted-array variant, not a bug in the baseline).
 - Communication: cover clarifications before coding, how clearly they explained their approach before implementing, post-implementation discussion, and—critically—**oral think-aloud while coding**. The app records **voice only while the code editor is active** (the coding segment). **Typing in chat is not a substitute** for thinking aloud in a real on-site. Weave in naturally—do not add a separate "follow-up questions" list or label chunks of the conversation as "phases".
 - **Coding voice report (obligatory when present below):** If the report shows negligibleThinkAloud: true (too few words captured while coding), treat silent coding as a serious communication gap: **comms must be at most 2** and ## Communication and ## What to improve must state explicitly that a real interview expects you to **narrate as you go** (or at least when prompted). If negligibleThinkAloud is false but word count is still low, cap **comms at 3** unless the voice shows clear, sustained explanation while coding. Do not inflate comms from chat quality alone when the voice report is negligible.
 - Apply the same complexity conventions as in the live interview (e.g. O(1) auxiliary for brute force with only indices is correct unless they allocated O(n) extra structures).
@@ -136,6 +152,31 @@ function formatCodingVoiceReport(r: CodingVoiceReport | null): string {
   return `\n\nCoding-segment voice report (ground truth: ambient capture while the editor is active; clarifying/planning are not included):\n- Utterance count: ${r.utteranceCount}\n- Word count (approx.): ${r.wordCount}\n- negligibleThinkAloud: ${r.negligibleThinkAloud} (if true, apply the hard comms cap per system instructions; if 20–44 words, apply the softer comms cap unless narration was clearly continuous).`;
 }
 
+function formatVariantProgression(
+  variants: FeedbackFollowUpVariant[] | null
+): string {
+  if (variants === null || variants.length === 0) {
+    return "";
+  }
+  const list = variants
+    .map((v, i) => {
+      const fn = v.entryFunction
+        ? ` [graded function: ${v.entryFunction}]`
+        : "";
+      return `${i + 1}.${fn} ${v.prompt}`;
+    })
+    .join("\n");
+  return `
+
+Assigned follow-up variants (ground truth — judge correctness against the RIGHT task):
+This was NOT a single-problem session. The candidate first solved the baseline above, then the interviewer DELIBERATELY escalated them through the variant(s) below. Each is a distinct problem with its own contract and its own graded tests. Late snapshots and the FINAL code reflect whichever variant was active then, NOT the baseline. Do not call progressing into an assigned variant "drifting" or "solving the wrong problem".
+
+Variants assigned, in order:
+${list}
+
+The FINAL code shown above is the candidate's latest implementation — it belongs to the most recent variant they were coding, NOT the baseline. Identify which by matching the function(s) the final code defines to the "graded function" tags above (e.g. code defining \`three_sum\` is that 3-sum variant). Judge the final code's correctness against THAT variant's specification. Each variant's Submit was graded against that variant's own hidden tests; an interviewer "Okay, that works." in the transcript indicates that variant's submission passed.`;
+}
+
 function formatPaceReport(r: PaceReport): string {
   const lines: string[] = [
     "",
@@ -168,6 +209,7 @@ export async function* streamFeedback(
   paceReport: PaceReport | null = null,
   level: InterviewLevel | null = null,
   codingVoiceReport: CodingVoiceReport | null = null,
+  followUpVariants: FeedbackFollowUpVariant[] | null = null,
   apiKey?: string
 ): AsyncGenerator<string> {
   const transcriptSection =
@@ -180,8 +222,10 @@ export async function* streamFeedback(
       ? `\n\nCandidate's dry-run trace (they stepped through the algorithm manually without executing code):\n${traceContent}`
       : "";
 
+  const variantSection = formatVariantProgression(followUpVariants);
+
   const userPrompt = `Full problem statement:
-${question}
+${question}${variantSection}
 
 Note: The transcript includes their post-implementation Q&A with you. Use it in your write-up; do not add a fresh numbered list of "follow-up questions" for them to answer.
 

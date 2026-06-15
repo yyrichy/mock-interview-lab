@@ -9,6 +9,7 @@ import { type AiModelConfig, getAiModelConfig } from "@/lib/ai-models";
 import type { ChatMessage } from "@/lib/chat";
 import type { CodingVoiceReport } from "@/lib/coding-voice-report";
 import {
+  type FeedbackFollowUpVariant,
   type FeedbackSnapshot,
   type InterviewLevel,
   type PaceReport,
@@ -31,6 +32,7 @@ type FeedbackBody = {
   paceReport?: PaceReport;
   level?: string;
   codingVoiceReport?: CodingVoiceReport;
+  followUpVariants?: FeedbackFollowUpVariant[];
 };
 
 function jsonError(message: string, status: number) {
@@ -39,6 +41,31 @@ function jsonError(message: string, status: number) {
 
 function isInterviewLevel(v: unknown): v is InterviewLevel {
   return v === "intern" || v === "new-grad" || v === "mid" || v === "senior";
+}
+
+function parseFollowUpVariants(
+  raw: unknown
+): FeedbackFollowUpVariant[] | null {
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+  const variants: FeedbackFollowUpVariant[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== "object") {
+      continue;
+    }
+    const o = item as Record<string, unknown>;
+    if (typeof o.prompt !== "string" || o.prompt.trim().length === 0) {
+      continue;
+    }
+    variants.push({
+      prompt: o.prompt,
+      ...(typeof o.entryFunction === "string" && o.entryFunction.trim().length > 0
+        ? { entryFunction: o.entryFunction }
+        : {}),
+    });
+  }
+  return variants.length > 0 ? variants : null;
 }
 
 function parseCodingVoiceReport(raw: unknown): CodingVoiceReport | null {
@@ -101,6 +128,7 @@ export async function POST(req: Request) {
     body.paceReport != null ? body.paceReport : null,
     isInterviewLevel(body.level) ? body.level : null,
     parseCodingVoiceReport(body.codingVoiceReport),
+    parseFollowUpVariants(body.followUpVariants),
     requestApiKey
   );
 
