@@ -16,7 +16,14 @@ const hasEnv =
 const redis = hasEnv ? Redis.fromEnv() : null;
 
 /** Interview starts (`sessions:started`) after which the demo flips to BYOK. */
-export const BYOK_SESSION_THRESHOLD = 225;
+function sessionThreshold(): number | null {
+  const raw = process.env.BYOK_SESSION_THRESHOLD?.trim();
+  if (!raw) {
+    return null;
+  }
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
 
 const BYOK_MODE_KEY = "byok:mode";
 const SESSIONS_STARTED_KEY = "sessions:started";
@@ -56,7 +63,7 @@ function toNumber(v: unknown): number {
  * Is the demo in BYOK / at-capacity mode? Precedence:
  *   1. BYOK_MODE env override (emergency on/off)
  *   2. Redis `byok:mode` flag (latched by the quota auto-trip)
- *   3. `sessions:started` >= BYOK_SESSION_THRESHOLD
+ *   3. `sessions:started` >= BYOK_SESSION_THRESHOLD env (skipped when unset)
  * Fail-open OFF — no Redis or any error means normal users are unaffected.
  */
 export async function getByokMode(): Promise<boolean> {
@@ -79,7 +86,10 @@ export async function getByokMode(): Promise<boolean> {
       ]);
       const flagged =
         flag === true || flag === 1 || flag === "1" || flag === "true";
-      value = flagged || toNumber(started) >= BYOK_SESSION_THRESHOLD;
+      const threshold = sessionThreshold();
+      value =
+        flagged ||
+        (threshold !== null && toNumber(started) >= threshold);
     } catch {
       value = false; // fail-open
     }

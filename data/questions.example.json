@@ -1,0 +1,39 @@
+[
+  {
+    "id": "example-question",
+    "title": "Example Question",
+    "difficulty": "easy",
+    "company": ["example-co"],
+    "labels": ["arrays", "hash-map"],
+    "entryFunction": "solve",
+    "candidateDescription": "Write the problem statement here exactly as the candidate should read it. Use plain language. Do NOT reveal the optimal approach, the target complexity, or the edge cases your hidden tests probe — leave room for the candidate to ask clarifying questions. The `input` of each test case below is a JSON array of the arguments passed to `entryFunction` (here: solve(nums, target)).",
+    "interviewerContext": "SERVER-ONLY grading notes — never shown to the candidate. Put here: the real constraints, the optimal approach and its time/space complexity, any intentional ambiguity you left in the description (so you know how to answer clarifications), probing cues to use when the candidate stalls, and what separates a strong answer from a weak one. The interviewer model reads this to grade fairly and to answer clarifying questions accurately.",
+    "starterCode": "def solve(nums, target):\n    pass",
+    "testCases": [
+      {
+        "input": "[[1,2,3],5]",
+        "expected": "[1,2]"
+      },
+      {
+        "input": "[[3,2,4],6]",
+        "expected": "[1,2]"
+      }
+    ],
+    "hiddenTestCases": [],
+    "followUps": [
+      {
+        "id": "example-question-variant",
+        "prompt": "Introduce a harder variant the interviewer escalates to after the baseline is solved — e.g. a sorted-input or different-arity version. If this variant grades a DIFFERENT function than the baseline, state the exact def line: \"Define a new function `def solve_variant(nums):` for this — it will be graded instead of `solve`; your existing code can stay.\" Omit `entryFunction` (and that instruction) if the baseline function is still graded.",
+        "expectedMinutes": 8,
+        "entryFunction": "solve_variant",
+        "testCases": [
+          {
+            "input": "[[1,2,3]]",
+            "expected": "[1,2,3]"
+          }
+        ],
+        "hiddenTestCases": []
+      }
+    ]
+  }
+]
