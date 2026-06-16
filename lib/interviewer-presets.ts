@@ -9,7 +9,7 @@ export type InterviewerStyle =
 
 export type ConcreteInterviewerStyle = Exclude<InterviewerStyle, "surprise-me">;
 
-export const INTERVIEWER_STYLE_STORAGE_KEY = "ai-interviewer:interviewerStyle";
+export const INTERVIEWER_STYLE_STORAGE_KEY = "mock-coding:interviewerStyle";
 export const DEFAULT_INTERVIEWER_STYLE: InterviewerStyle = "surprise-me";
 
 export const INTERVIEWER_STYLE_OPTIONS: { id: InterviewerStyle; label: string }[] = [

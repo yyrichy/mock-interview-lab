@@ -46,7 +46,7 @@ export const AI_MODEL_OPTIONS: ReadonlyArray<{
 export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId = "openai-gpt-5.4-mini";
 
 /** localStorage key for the interview model picker (survives refresh). */
-export const AI_MODEL_PRESET_STORAGE_KEY = "ai-interviewer:modelPresetId";
+export const AI_MODEL_PRESET_STORAGE_KEY = "mock-coding:modelPresetId";
 
 export function isAiModelPresetId(id: string): id is AiModelPresetId {
   return id in AI_MODEL_PRESETS;

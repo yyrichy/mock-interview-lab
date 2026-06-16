@@ -85,7 +85,7 @@ export function AtCapacity({ questionId }: { questionId: string }) {
       <div className="mx-auto flex min-h-screen max-w-2xl flex-col py-12 sm:py-20">
         <header>
           <Link href="/" className="font-mono text-sm text-zinc-500 hover:text-zinc-300">
-            ai-interviewer
+            Mock Coding
           </Link>
         </header>
 

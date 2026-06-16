@@ -16,6 +16,8 @@ import type {
 } from "@/lib/chat";
 import { synthesizeAlexVoice } from "@/lib/speech";
 
+const ALEX_VOICE_STORAGE_KEY = "mock-coding:alexVoice";
+
 type Props = {
   messages: ChatMessage[];
   modelPresetId: AiModelPresetId;
@@ -110,7 +112,7 @@ export function ChatPanel({
       // stranger should hear Alex without hunting for a toggle. Only an EXPLICIT
       // stored "false" (a user who turned it off) keeps it off; an absent value
       // (fresh browser) falls through to ON.
-      return localStorage.getItem("ai-interviewer:alexVoice") !== "false";
+      return localStorage.getItem(ALEX_VOICE_STORAGE_KEY) !== "false";
     } catch {
       return true;
     }
@@ -131,7 +133,7 @@ export function ChatPanel({
 
   useEffect(() => {
     try {
-      localStorage.setItem("ai-interviewer:alexVoice", alexVoice ? "true" : "false");
+      localStorage.setItem(ALEX_VOICE_STORAGE_KEY, alexVoice ? "true" : "false");
     } catch {
       /* ignore */
     }

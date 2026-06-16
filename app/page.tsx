@@ -30,7 +30,7 @@ export default async function Home() {
     <div className="min-h-screen bg-zinc-950 px-6 text-zinc-100">
       <div className="mx-auto flex min-h-screen max-w-2xl flex-col py-12 sm:py-20">
         <header>
-          <p className="font-mono text-sm text-zinc-500">ai-interviewer</p>
+          <p className="font-mono text-sm text-zinc-500">Mock Coding</p>
         </header>
 
         <main className="mt-14 flex-1 sm:mt-20">

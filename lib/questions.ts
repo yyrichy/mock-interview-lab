@@ -217,9 +217,9 @@ export function questionToEditorInitialValue(question: PublicQuestion): string {
   const lines: string[] = [];
   lines.push(`# ${question.title}`);
   lines.push(`# Difficulty: ${question.difficulty}`);
-  if (question.company?.length) {
-    lines.push(`# Companies: ${question.company.join(", ")}`);
-  }
+  // if (question.company?.length) {
+  //   lines.push(`# Companies: ${question.company.join(", ")}`);
+  // }
   lines.push("#");
   for (const raw of question.candidateDescription.split("\n")) {
     lines.push(raw.length === 0 ? "#" : `# ${raw}`);

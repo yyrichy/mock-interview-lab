@@ -237,7 +237,7 @@ export function InterviewWorkspace({ question }: Props) {
   const [submitOutcome, setSubmitOutcome] = useState<string | null>(null);
   const lastTestResultRef = useRef<TestRunSummary | null>(null);
   const [runMode, setRunMode] = usePersistedState<"standard" | "limited" | "dry-run">(
-    "ai-interviewer:runMode",
+    "mock-coding:runMode",
     "standard",
     (raw) =>
       raw === "standard" || raw === "limited" || raw === "dry-run" ? raw : null
@@ -285,13 +285,13 @@ export function InterviewWorkspace({ question }: Props) {
   // assistant bubble across all migrated call sites.
   const currentAgentAssistantIdRef = useRef<string | null>(null);
   const [padRealism, setPadRealism] = usePersistedState<boolean>(
-    "ai-interviewer:padRealism",
+    "mock-coding:padRealism",
     false,
     (raw) => (raw === "true" ? true : raw === "false" ? false : null),
     (v) => (v ? "true" : "false")
   );
   const [humanLatency, setHumanLatency] = usePersistedState<boolean>(
-    "ai-interviewer:humanLatency",
+    "mock-coding:humanLatency",
     false,
     (raw) => (raw === "true" ? true : raw === "false" ? false : null),
     (v) => (v ? "true" : "false")

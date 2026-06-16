@@ -45,7 +45,7 @@ export type PersistedInterviewSession = {
 };
 
 export function sessionStorageKey(questionId: string): string {
-  return `ai-interviewer:session:v1:${questionId}`;
+  return `mock-coding:session:v1:${questionId}`;
 }
 
 function isSessionPhase(v: unknown): v is SessionPhase {
@@ -250,7 +250,7 @@ export function clearPersistedInterviewSession(questionId: string): void {
   }
   try {
     localStorage.removeItem(sessionStorageKey(questionId));
-    localStorage.removeItem(`ai-interviewer:code:${questionId}`);
+    localStorage.removeItem(`mock-coding:code:${questionId}`);
   } catch {
     /* ignore */
   }

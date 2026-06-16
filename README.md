@@ -1,4 +1,13 @@
-# ai-interviewer
+# Mock Coding
+
+**[Try it live →](https://mockcoding.dev)**
+
+[![Live demo](https://img.shields.io/badge/mockcoding.dev-emerald?style=for-the-badge)](https://mockcoding.dev)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 
 A coding interview simulator. You get a problem, talk through your approach out loud, write real code in a real editor, and an AI interviewer ("Alex") listens, pushes back, and writes a structured scorecard at the end grounded in what you actually did.
 
@@ -42,14 +51,16 @@ A normal chat is already good at running a flexible clarify → approach → cod
 | Voice out | OpenAI `gpt-4o-mini-tts` (default) or ElevenLabs |
 | Code execution | Judge0 — Python 3 only; public CE endpoint by default, override via `JUDGE0_API_URL` |
 | Limits / analytics | Upstash Redis — rate limiting, signup capture, funnel/rating stats, BYOK "at capacity" gate (all optional, fail-open) |
-| Question bank | `data/questions.json` |
+| Question bank | `data/questions.demo.json` (local, gitignored) |
 | Persistence | localStorage — full session (chat, code, transcript, timers, run state) autosaved per question, restored on refresh, cleared after feedback or reset |
 
 ---
 
-## Run it
+## Run it locally
 
 ```bash
+git clone https://github.com/karanjot-gaidu/ai-mock-interviewer.git
+cd ai-mock-interviewer
 npm install
 # copy .env.example → .env.local and fill in at least OPENAI_API_KEY
 # copy data/questions.example.json → data/questions.demo.json and add your questions
@@ -69,12 +80,14 @@ The default setup runs entirely on **OpenAI** — it powers the interviewer, fee
 
 ```
 OPENAI_API_KEY=...        # required for the default setup
+NEXT_PUBLIC_SITE_URL=...  # optional; canonical URL for OG tags (defaults to the mockcoding.dev)
 GEMINI_API_KEY=...        # optional alternate interviewer model
 GROQ_API_KEY=...          # optional alternate interviewer model
 ANTHROPIC_API_KEY=...     # optional alternate interviewer model
 ELEVENLABS_API_KEY=...    # optional alternate TTS engine
 # JUDGE0_API_URL=...       # optional; defaults to the public Judge0 CE endpoint
 # UPSTASH_REDIS_REST_URL / _TOKEN   # optional; enables limits + analytics
+# BYOK_SESSION_THRESHOLD=...        # optional; session count before at-capacity gate
 ```
 
 See `.env.example` for the full set (TTS engine selection, Judge0 auth headers incl. RapidAPI, the at-capacity override, and the stats token). Keys in `.env.local` are read server-side only by the API routes — never sent to the browser, logged, or persisted.
@@ -89,15 +102,15 @@ See `.env.example` for the full set (TTS engine selection, Judge0 auth headers i
 app/
   page.tsx                      landing page
   questions/page.tsx            question browser
-  interview/[questionId]/       interview session (page + loading)
-  at-capacity/page.tsx          BYOK "at capacity" gate
+  interview/[questionId]/         interview session (page + loading)
+  at-capacity/page.tsx            BYOK "at capacity" gate
   api/
     interviewer/route.ts        the single interviewer brain — every conversational turn
-    feedback/route.ts           final grounded scorecard generation
-    judge0/route.ts             Judge0 code-execution proxy
-    transcribe/route.ts         OpenAI transcription proxy
-    tts/route.ts                text-to-speech proxy (OpenAI default / ElevenLabs)
-    rating, signup, stats       funnel + analytics endpoints (Upstash-backed)
+    feedback/route.ts             final grounded scorecard generation
+    judge0/route.ts               Judge0 code-execution proxy
+    transcribe/route.ts           OpenAI transcription proxy
+    tts/route.ts                  text-to-speech proxy (OpenAI default / ElevenLabs)
+    rating, signup, stats         funnel + analytics endpoints (Upstash-backed)
 
 components/
   InterviewWorkspace.tsx        owns session state, phase transitions, timers (UI)
@@ -130,7 +143,10 @@ lib/
                                 useInterviewSessionAutosave
 
 data/
-  questions.json                the question bank (candidate description + server-only grading context + hidden tests)
+  questions.demo.json           your local question bank (gitignored)
+  questions.example.json        tracked schema template
+public/
+  og.png                        Open Graph preview image
 ```
 
 ---

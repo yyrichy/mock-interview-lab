@@ -26,4 +26,4 @@ npm-debug.log*
 *.swp
 
 # Large data files Cursor shouldn't index
-data/questions.json
+data/questions.*

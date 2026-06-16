@@ -25,7 +25,7 @@ export default function QuestionsPage() {
             href="/"
             className="font-mono text-xs text-zinc-500 transition hover:text-zinc-300"
           >
-            ← ai-interviewer
+            ← Mock Coding
           </Link>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">
             Pick a problem

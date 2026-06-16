@@ -1,39 +1,90 @@
 # AGENTS.md
 
-## Project
-ai-interviewer — a coding interview simulator.
-Stack: Next.js, TypeScript, Tailwind, Monaco Editor, Vercel AI SDK 6, Judge0, OpenAI Whisper + TTS.
+Mock Coding — a coding-interview simulator.
+Stack: Next.js · TypeScript · Tailwind · Monaco · Vercel AI SDK 6 · Judge0 · OpenAI (Whisper + TTS).
 
-## Core principle (read this first)
-**The model owns the conversation. The app owns the evidence.**
+This file is the behavioral contract and the source of truth for rules. It is
+runtime-agnostic; `CLAUDE.md` imports it and adds the architecture map plus
+Claude-Code specifics. When the two could drift: rules live here, "where things
+live" lives in `CLAUDE.md`.
 
-Normal chat (ChatGPT/Claude) is already better at running a flexible clarify → approach → code → follow-up → feedback conversation than any hand-built state machine. This app is worth building ONLY because it gives the model things chat cannot see: a real code editor, Judge0 execution against visible AND hidden tests, timing, voice think-aloud, solution snapshots, and feedback grounded in that evidence.
+## How to work (read this first)
 
-So: do not script the conversation. Do not gate the model behind a phase/tool-permission matrix. Give the model one strong system prompt plus live state (code, tests, transcript, elapsed time) and let it speak naturally. Use tools ONLY to read evidence and run tests.
+Four checks, before and during every change. They bias toward caution over
+speed — for trivial edits, use judgment.
 
-## Architecture (target state)
-- **One interviewer brain:** `POST /api/interviewer`. It handles every conversational turn — opening, clarifying, planning, coding guidance, follow-ups, nudges. There are no per-moment scripted endpoints.
-- **Phase is app metadata, not a conversation handcuff.** `InterviewWorkspace` advances phase and sends the current phase to the model as context. The model does NOT call a tool to change phase.
-- **Grounding tools only:** `read_current_code`, `read_recent_transcript`, `get_test_results`, `run_tests`. These let the model see evidence and execute. They never mutate conversational flow.
-- **Final feedback** is a grounded generation over the collected evidence (transcript, snapshots, test history, timing). Implement it wherever is cleanest — either a dedicated route or a grounded path in `/api/interviewer`. It is the one genuinely evidence-heavy, non-conversational job.
+**1. Think before coding.** Don't assume. Don't hide confusion. Surface tradeoffs.
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, name them — don't pick one silently.
+- If a simpler approach exists, say so. Push back when warranted.
+
+**2. Simplicity first.** Minimum code that solves the problem. Nothing speculative.
+- No feature, abstraction, config surface, or error-handling for cases nobody asked for.
+- If you wrote 200 lines and it could be 50, rewrite it.
+- "Would a senior engineer call this overcomplicated?" If yes, simplify.
+- Project-specific test: a change earns its place only if it makes an *evidence
+  layer* better (execution, hidden tests, timing, voice, snapshots, grounded
+  feedback) or the *conversation* more natural. If it does neither, don't make it.
+
+**3. Surgical changes.** Touch only what the request requires.
+- Don't "improve" adjacent code, comments, or formatting. Match existing style even if you'd do it differently.
+- Remove imports/vars/functions *your* change orphaned; leave pre-existing dead code alone (mention it, don't delete it).
+- Every changed line should trace directly to the request.
+
+**4. Goal-driven execution.** Turn the task into a verifiable goal, then loop until it's met.
+- There is no automated test suite. The gate is `npm run lint` (zero errors) plus a manual run via `npm run dev`.
+- Don't claim done on conversational behavior you can't prove unattended — lint
+  green is the ceiling of an autonomous run; the human verifies the interview by
+  running the app.
+
+## Core principle: the model owns the conversation; the app owns the evidence
+
+Normal chat already runs a flexible clarify → approach → code → follow-up →
+feedback conversation better than any hand-built state machine. This app is
+worth building ONLY because it gives the model what chat cannot see: a real
+editor, Judge0 execution against visible AND hidden tests, timing, voice
+think-aloud, solution snapshots, and feedback grounded in all of it.
+
+So: don't script the conversation. Don't gate the model behind a
+phase/permission matrix. Give it one strong system prompt plus live state (code,
+tests, transcript, elapsed time) and let it speak. Tools exist ONLY to read
+evidence and run tests.
+
+## Architecture (one paragraph; full map in CLAUDE.md)
+
+One interviewer brain — `POST /api/interviewer` — handles every conversational
+turn. Phase is app metadata that drives the UI only; `InterviewWorkspace` owns
+it and passes it to the model as context. Grounding tools read evidence and run
+tests, nothing more. Final feedback is a separate grounded generation at
+`POST /api/feedback`. Speech and code execution are settled utility layers.
 
 ## Hard rules
-- Do NOT script conversational moments (opening, planningOpener, followUpOpener, forcedWrap, codingEscalationNudge, etc.). The model generates these from state.
-- Do NOT gate tools by phase. Drop the `TOOL_PERMISSIONS` matrix and the control tools (`set_phase`, `start_follow_up_variant`, `generate_final_feedback` as a flow-driver).
-- Do NOT touch `lib/judge0.ts` or `/api/judge0`, `/api/transcribe`, `/api/tts`. Execution and speech are working grounding/utility layers.
-- Do NOT send `interviewerContext` or hidden test cases to the model as candidate-facing context. Hidden test input/expected is redacted before any tool return.
-- Do NOT spawn parallel sub-agents — the steps here are sequentially dependent.
-- Do NOT reintroduce Web Speech or local Whisper. Server-side hosted transcription only — currently OpenAI `gpt-4o-mini-transcribe` via `/api/transcribe`.
-- Default interviewer model is **OpenAI GPT-5.4 Mini** (demo/hosted — the hosted demo is deployed with the builder's own OpenAI key so the interview "just works" for signups: no BYOK friction, no weak-caller failures). **Groq, Gemini, and Anthropic remain selectable via BYOK** for self-hosters — they are simply no longer the default. Because Groq (a selectable, weak structured tool-caller) must keep working, the architecture still leans on prompt+state, not tool orchestration — fewer tools, no control-flow tools, never a silent/tool-only turn — and the Groq defensive guards (`noToolInput`, force-text-on-tool-failure) stay in place as graceful degradation.
+
+- Don't script conversational moments (opening, planningOpener, followUpOpener, forcedWrap, codingEscalationNudge, …). The model generates them from state.
+- Don't gate tools by phase or bring back control-flow tools (`set_phase`, `start_follow_up_variant`, a `TOOL_PERMISSIONS` matrix, `generate_final_feedback` as a flow-driver). These were removed — keep them gone.
+- Don't touch `lib/judge0.ts`, `/api/judge0`, `/api/transcribe`, `/api/tts`. Execution and speech are working layers.
+- Don't send `interviewerContext` or hidden test cases to the model. Redact hidden input/expected before any tool return.
+- Don't reintroduce Web Speech, local Whisper, history summarization, or windowing. Transcription is server-side hosted (OpenAI `gpt-4o-mini-transcribe`); full chat history is sent verbatim every turn.
+- Don't spawn parallel sub-agents — the steps here are sequentially dependent.
+- Don't run `npm run build` during development. Use `npm run dev`.
 - No `any` types. Server-only secrets; BYOK via `x-provider-key` header, never logged or persisted.
-- Never run `npm run build` during development. Use `npm run dev`.
+- Default interviewer model is **OpenAI GPT-5.4 Mini** (hosted demo on the builder's own key — zero BYOK friction for signups). Groq, Gemini, and Anthropic stay selectable via BYOK. Because Groq is a weak structured tool-caller, lean on prompt+state, not tool orchestration: few tools, no control-flow tools, never a silent/tool-only turn, and keep the Groq guards (`noToolInput`, force-text-on-tool-failure).
 
 ## Commands
-```bash
-npm run dev      # start dev server
-npm run lint     # ESLint — this is the gate for "done" on an autonomous run
-```
-No automated test suite. Final verification of the interview loop is MANUAL via `npm run dev`.
 
-## Stop condition (for autonomous runs)
-Stop when the refactor is code-complete AND `npm run lint` passes with zero errors. Then hand back with a summary of what changed and a smoke-test checklist. **Do NOT attempt to verify the interview by simulating a session yourself** — lint green is the ceiling of what an unattended run can prove. The human verifies behavior by running the app.
+```bash
+npm run dev      # start dev server — the only way to run it
+npm run lint     # ESLint — the gate for "done"
+```
+
+## Stop condition (autonomous runs)
+
+Done = code-complete AND `npm run lint` passes with zero errors. Then hand back
+with a summary of what changed and a smoke-test checklist. Do NOT simulate an
+interview to "verify" — the human does that by running the app.
+
+---
+
+**These rules are working if:** diffs touch only what the request needed, fewer
+rewrites from overcomplication, and clarifying questions come before the work
+rather than after a wrong guess.

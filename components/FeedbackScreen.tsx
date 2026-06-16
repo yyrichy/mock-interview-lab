@@ -6,7 +6,7 @@ import { useState } from "react";
 import { AssistantMessageBody } from "@/components/AssistantMessageBody";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const SIGNED_UP_STORAGE_KEY = "ai-interviewer:signedUp";
+const SIGNED_UP_STORAGE_KEY = "mock-coding:signedUp";
 
 function loadSignedUp(): boolean {
   if (typeof window === "undefined") {

@@ -4,7 +4,7 @@ export type ProviderKeyId = AiProvider | "elevenlabs";
 
 export type ProviderKeys = Partial<Record<ProviderKeyId, string>>;
 
-const STORAGE_KEY = "ai-interviewer:byok";
+const STORAGE_KEY = "mock-coding:byok";
 
 export function loadProviderKeys(): ProviderKeys {
   try {

@@ -1,4 +1,4 @@
-# ai-interviewer — Architecture & Design
+# Mock Coding — Architecture & Design
 
 A coding-interview simulator. The model runs the interview conversation; the app
 captures and serves objective evidence the model could not otherwise see —
@@ -192,7 +192,7 @@ them for the feedback evidence.
 
 ## Question bank
 
-`data/questions.json`, loaded via `lib/questions.ts`. Each question carries a
+`data/questions.demo.json`, loaded via `lib/questions.ts`. Each question carries a
 `candidateDescription` (shown to the candidate) and server-only grading context plus
 hidden test cases (never sent to the model as candidate-facing context). Questions
 can define follow-up variants with their own entry function and test sets, which the
