@@ -1,0 +1,820 @@
+[
+    {
+      "id": "two-sum",
+      "title": "Two Sum",
+      "difficulty": "easy",
+      "company": [
+        "google",
+        "amazon",
+        "microsoft",
+        "apple"
+      ],
+      "labels": [
+        "arrays",
+        "hash-map"
+      ],
+      "entryFunction": "two_sum",
+      "candidateDescription": "You have a list of numbers and a target value. Write a function that finds two numbers in the list that add up to the target. You can assume there's always exactly one valid answer, and you can't use the same number twice.",
+      "interviewerContext": "Two Sum. Constraints: 2 <= nums.length <= 10^4, integers can be negative or positive, exactly one solution exists, cannot use the same element twice. Return the indices of the two numbers.\n\nWhat the optimal path looks like: candidate recognizes a hash map lets them trade space for a single pass -- store each value and its index, check for the complement on the way. O(n) time, O(n) space. Brute force is O(n^2) with two nested loops.\n\nNatural ambiguity for clarifying: the description intentionally omits what to return -- let the candidate ask or state their assumption. If they ask, tell them indices. If they say they will return the values instead, redirect them to return indices.\n\nProbing cues (use when candidate stalls or submits brute force):\n- What if you could look up whether a number exists in O(1) -- how would that change your approach?\n- You are iterating through the array already -- what information could you be storing as you go?\n- Your solution works -- what is the time complexity, and do you see a way to bring it down?\n\nStrong answer: states the hash map idea unprompted or arrives there quickly when nudged, explains why it works in one pass, mentions O(n) / O(n). Weak answer: jumps straight to nested loops, does not recognize the space/time tradeoff, or cannot articulate complexity.",
+      "starterCode": "def two_sum(nums, target):\n    pass",
+      "testCases": [
+        {
+          "input": "[[2,7,11,15],9]",
+          "expected": "[0,1]"
+        },
+        {
+          "input": "[[3,2,4],6]",
+          "expected": "[1,2]"
+        }
+      ],
+      "hiddenTestCases": [
+        {
+          "input": "[[3,3],6]",
+          "expected": "[0,1]",
+          "description": "duplicate-value pair (tests same element can't be reused)"
+        },
+        {
+          "input": "[[-1,-2,-3,-4,-5],-8]",
+          "expected": "[2,4]",
+          "description": "all-negative array"
+        },
+        {
+          "input": "[[0,4,3,0],0]",
+          "expected": "[0,3]",
+          "description": "two zeros sum to target"
+        },
+        {
+          "input": "[[2,7,3,11,15,1,9,4],6]",
+          "expected": "[0,7]",
+          "description": "single valid pair buried in a longer array"
+        },
+        {
+          "input": "[[-3,4,3,90],0]",
+          "expected": "[0,2]",
+          "description": "negative and positive pair"
+        },
+        {
+          "input": "[[500000000,2,3,499999999],999999999]",
+          "expected": "[0,3]",
+          "description": "large integers, single valid pair"
+        },
+        {
+          "input": "[[5,75,25],100]",
+          "expected": "[1,2]",
+          "description": "target found by skipping the first element"
+        }
+      ],
+      "followUps": [
+        {
+          "id": "two-sum-sorted",
+          "prompt": "Now suppose the input array is already sorted in ascending order. Solve it using O(1) extra space.",
+          "expectedMinutes": 8,
+          "testCases": [
+            {
+              "input": "[[2,7,11,15],9]",
+              "expected": "[0,1]"
+            },
+            {
+              "input": "[[1,3,4,6,10],10]",
+              "expected": "[2,3]"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[[0,3,3,7],6]",
+              "expected": "[1,2]",
+              "description": "duplicate value is its own complement"
+            },
+            {
+              "input": "[[-5,-2,0,3,9],-7]",
+              "expected": "[0,1]",
+              "description": "negative numbers with a negative target"
+            },
+            {
+              "input": "[[1,2,3,4,20],21]",
+              "expected": "[0,4]",
+              "description": "answer pair sits at the two ends of the array"
+            },
+            {
+              "input": "[[1,4,5,7,11],9]",
+              "expected": "[1,2]",
+              "description": "adjacent pair in the middle — pointers must meet correctly"
+            },
+            {
+              "input": "[[3,8],11]",
+              "expected": "[0,1]",
+              "description": "minimum-size two-element array"
+            },
+            {
+              "input": "[[0,0,4],0]",
+              "expected": "[0,1]",
+              "description": "two zeros sum to a zero target"
+            }
+          ]
+        },
+        {
+          "id": "two-sum-three",
+          "entryFunction": "three_sum",
+          "prompt": "Now suppose I give you three numbers instead of two — find three values in the list that sum to zero. Your function now takes just the list. Return the three values sorted in ascending order — if more than one triple works, return the lexicographically smallest — or an empty list if no triple sums to zero. Define a new function `def three_sum(nums):` for this — it will be graded instead of `two_sum`; your existing code can stay.",
+          "expectedMinutes": 10,
+          "testCases": [
+            {
+              "input": "[[-1,0,1,2,-1,-4]]",
+              "expected": "[-1,-1,2]"
+            },
+            {
+              "input": "[[1,2,-3]]",
+              "expected": "[-3,1,2]"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[[0,0,0]]",
+              "expected": "[0,0,0]",
+              "description": "all-zero triple"
+            },
+            {
+              "input": "[[1,2,4,5]]",
+              "expected": "[]",
+              "description": "no valid triple exists"
+            },
+            {
+              "input": "[[-2,1,1,5]]",
+              "expected": "[-2,1,1]",
+              "description": "same value must be used twice in the triple"
+            },
+            {
+              "input": "[[-5,-4,1,4,9,0]]",
+              "expected": "[-5,-4,9]",
+              "description": "several triples exist — must pick the lexicographically smallest"
+            },
+            {
+              "input": "[[5,-3,-2]]",
+              "expected": "[-3,-2,5]",
+              "description": "exactly three elements in the array"
+            },
+            {
+              "input": "[[-1,-2,-3]]",
+              "expected": "[]",
+              "description": "all negative — impossible"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "longest-substring-no-repeat",
+      "title": "Longest Substring Without Repeating Characters",
+      "difficulty": "medium",
+      "company": [
+        "google",
+        "amazon",
+        "bloomberg",
+        "meta"
+      ],
+      "labels": [
+        "sliding-window",
+        "hash-map",
+        "strings"
+      ],
+      "entryFunction": "length_of_longest_substring",
+      "candidateDescription": "Given a string, find the length of the longest contiguous part of it where no character appears more than once.",
+      "interviewerContext": "Longest substring without repeating characters. String length up to 5 * 10^4, can contain any ASCII including spaces.\n\nWhat the optimal path looks like: sliding window with a hash map tracking the last-seen index of each character. On a repeat, jump the left boundary to just past the previous occurrence (don't just increment by one — candidate must not move left backward). O(n) time, O(min(n, alphabet)) space.\n\nNatural ambiguity for clarifying: 'contiguous' may prompt a question about whether substrings must be consecutive — yes. Spaces and special characters are valid characters. Accept these as clarifying questions.\n\nProbing cues:\n- 'Walk me through what happens to your window when you hit a repeated character.'\n- 'What if the repeated character's previous occurrence is behind your left pointer — do you still move?'\n- 'Your two-pointer approach is right — what are you storing inside the window to check for repeats quickly?'\n\nStrong answer: arrives at sliding window, correctly handles the left-pointer-not-moving-backward trap (the 'abba' case), explains O(n). Weak answer: O(n^2) nested loop checking each substring, or sliding window but with incorrect left pointer update that moves it backward.",
+      "starterCode": "def length_of_longest_substring(s):\n    pass",
+      "testCases": [
+        {
+          "input": "[\"abcabcbb\"]",
+          "expected": "3"
+        },
+        {
+          "input": "[\"bbbbb\"]",
+          "expected": "1"
+        },
+        {
+          "input": "[\"pwwkew\"]",
+          "expected": "3"
+        }
+      ],
+      "hiddenTestCases": [
+        {
+          "input": "[\"\"]",
+          "expected": "0",
+          "description": "empty string"
+        },
+        {
+          "input": "[\"dvdf\"]",
+          "expected": "3",
+          "description": "window restart overlap (d...vdf)"
+        },
+        {
+          "input": "[\" \"]",
+          "expected": "1",
+          "description": "single space"
+        },
+        {
+          "input": "[\"abcdef\"]",
+          "expected": "6",
+          "description": "all unique"
+        },
+        {
+          "input": "[\"abba\"]",
+          "expected": "2",
+          "description": "left pointer must not move backwards"
+        },
+        {
+          "input": "[\"tmmzuxt\"]",
+          "expected": "5",
+          "description": "tricky restart from the middle"
+        },
+        {
+          "input": "[\"aab\"]",
+          "expected": "2",
+          "description": "leading duplicate"
+        }
+      ],
+      "followUps": [
+        {
+          "id": "at-most-k-distinct",
+          "entryFunction": "longest_k_distinct",
+          "prompt": "Now suppose instead of zero repeats, you're allowed up to k distinct characters in the window. Return the length of the longest substring with at most k distinct characters. Define a new function `def longest_k_distinct(s, k):` for this — it will be graded instead of `length_of_longest_substring`; your existing code can stay.",
+          "expectedMinutes": 10,
+          "testCases": [
+            {
+              "input": "[\"eceba\",2]",
+              "expected": "3"
+            },
+            {
+              "input": "[\"aa\",1]",
+              "expected": "2"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[\"abc\",0]",
+              "expected": "0",
+              "description": "k = 0 — only the empty window qualifies"
+            },
+            {
+              "input": "[\"abcabc\",3]",
+              "expected": "6",
+              "description": "k equals the number of distinct characters — whole string"
+            },
+            {
+              "input": "[\"\",2]",
+              "expected": "0",
+              "description": "empty string"
+            },
+            {
+              "input": "[\"aaabbb\",1]",
+              "expected": "3",
+              "description": "k = 1 with long runs of the same character"
+            },
+            {
+              "input": "[\"abaccc\",2]",
+              "expected": "4",
+              "description": "window must shrink past an earlier distinct character"
+            },
+            {
+              "input": "[\"a\",5]",
+              "expected": "1",
+              "description": "k larger than the string length"
+            }
+          ]
+        },
+        {
+          "id": "longest-substring-return-string",
+          "entryFunction": "longest_unique_substring",
+          "prompt": "Instead of the length, return the actual longest substring itself. If several substrings tie for the longest, return the one that appears first. Define a new function `def longest_unique_substring(s):` for this — it will be graded instead of `length_of_longest_substring`; your existing code can stay.",
+          "expectedMinutes": 6,
+          "testCases": [
+            {
+              "input": "[\"abcabcbb\"]",
+              "expected": "\"abc\""
+            },
+            {
+              "input": "[\"pwwkew\"]",
+              "expected": "\"wke\""
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[\"\"]",
+              "expected": "\"\"",
+              "description": "empty string in, empty string out"
+            },
+            {
+              "input": "[\"bbbbb\"]",
+              "expected": "\"b\"",
+              "description": "all same character"
+            },
+            {
+              "input": "[\"abcdab\"]",
+              "expected": "\"abcd\"",
+              "description": "tie between equal-length substrings — must return the leftmost"
+            },
+            {
+              "input": "[\"abba\"]",
+              "expected": "\"ab\"",
+              "description": "left pointer must not move backwards"
+            },
+            {
+              "input": "[\"tmmzuxt\"]",
+              "expected": "\"mzuxt\"",
+              "description": "best window restarts from the middle of the string"
+            },
+            {
+              "input": "[\"dvdf\"]",
+              "expected": "\"vdf\"",
+              "description": "window restart overlaps the previous window"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "course-schedule",
+      "title": "Course Schedule",
+      "difficulty": "medium",
+      "company": [
+        "google",
+        "amazon",
+        "meta"
+      ],
+      "labels": [
+        "graphs"
+      ],
+      "entryFunction": "can_finish",
+      "candidateDescription": "A student needs to complete a set of courses. Some courses have prerequisites — you must finish one before you can take another. Given the total number of courses and a list of prerequisite pairs, determine whether it's possible for the student to finish all of them.",
+      "interviewerContext": "Course Schedule — topological feasibility / cycle detection. Up to 2000 courses, up to 5000 prerequisite pairs. Each pair [a, b] means b must come before a.\n\nWhat the optimal path looks like: model as a directed graph. The question reduces to: does a valid topological ordering exist? Equivalently, is the graph acyclic? Two valid approaches — Kahn's algorithm (BFS with indegree tracking) or DFS cycle detection with a 'currently visiting' set. Both O(V+E). The graph may be disconnected; all components must be acyclic.\n\nNatural ambiguity for clarifying: candidate may ask whether prerequisites can be circular in the input (yes, that's what you're detecting), or whether a course can have multiple prerequisites (yes). Good clarifying questions.\n\nProbing cues:\n- 'How would you model the prerequisite relationships — what does the data structure look like?'\n- 'You've built the graph — what property of it tells you whether the student can finish?'\n- 'Your DFS is finding a cycle — how are you distinguishing a node you finished visiting from one you're currently in the middle of?'\n\nStrong answer: independently frames it as cycle detection on a directed graph, picks a correct algorithm and explains the visited/in-progress distinction for DFS (or indegree approach for Kahn). Weak answer: tries to simulate the schedule directly without graph framing, or uses undirected cycle detection (wrong for directed graphs).",
+      "starterCode": "def can_finish(num_courses, prerequisites):\n    pass",
+      "testCases": [
+        {
+          "input": "[2,[[1,0]]]",
+          "expected": "true"
+        },
+        {
+          "input": "[2,[[1,0],[0,1]]]",
+          "expected": "false"
+        }
+      ],
+      "hiddenTestCases": [
+        {
+          "input": "[1,[]]",
+          "expected": "true",
+          "description": "single course, no prerequisites"
+        },
+        {
+          "input": "[3,[]]",
+          "expected": "true",
+          "description": "no edges — any order works"
+        },
+        {
+          "input": "[3,[[0,1],[0,2],[1,2]]]",
+          "expected": "true",
+          "description": "chain DAG 2→1→0"
+        },
+        {
+          "input": "[4,[[1,0],[2,0],[3,1],[3,2]]]",
+          "expected": "true",
+          "description": "diamond DAG"
+        },
+        {
+          "input": "[3,[[1,0],[2,1],[0,2]]]",
+          "expected": "false",
+          "description": "simple directed cycle"
+        },
+        {
+          "input": "[5,[[0,1],[1,2],[2,3],[3,4],[4,0]]]",
+          "expected": "false",
+          "description": "long cycle through all nodes"
+        },
+        {
+          "input": "[7,[[1,0],[2,0],[3,1],[4,1],[5,2],[6,2]]]",
+          "expected": "true",
+          "description": "tree-shaped prerequisite graph"
+        }
+      ],
+      "followUps": [
+        {
+          "id": "course-schedule-ii",
+          "entryFunction": "find_order",
+          "prompt": "Now instead of just true or false, return one valid order to take all the courses — or an empty list if it's not possible. If multiple valid orders exist, return the lexicographically smallest one. Define a new function `def find_order(num_courses, prerequisites):` for this — it will be graded instead of `can_finish`; your existing code can stay.",
+          "expectedMinutes": 10,
+          "testCases": [
+            {
+              "input": "[2,[[1,0]]]",
+              "expected": "[0,1]"
+            },
+            {
+              "input": "[2,[[1,0],[0,1]]]",
+              "expected": "[]"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[1,[]]",
+              "expected": "[0]",
+              "description": "single course, no prerequisites"
+            },
+            {
+              "input": "[4,[[1,0],[2,0],[3,1],[3,2]]]",
+              "expected": "[0,1,2,3]",
+              "description": "diamond DAG — must pick the smallest ready course each step"
+            },
+            {
+              "input": "[3,[[0,1],[1,2]]]",
+              "expected": "[2,1,0]",
+              "description": "chain forcing the highest-numbered course first"
+            },
+            {
+              "input": "[4,[[1,0],[2,1],[1,2],[3,0]]]",
+              "expected": "[]",
+              "description": "cycle in one component — empty even though other courses are unconstrained"
+            },
+            {
+              "input": "[5,[[1,0],[3,2]]]",
+              "expected": "[0,1,2,3,4]",
+              "description": "disconnected components interleaved in smallest order"
+            },
+            {
+              "input": "[3,[]]",
+              "expected": "[0,1,2]",
+              "description": "no prerequisites at all"
+            }
+          ]
+        },
+        {
+          "id": "course-schedule-all-orders",
+          "entryFunction": "all_orders",
+          "prompt": "What if you needed all valid orderings, not just one? Return every valid topological ordering, sorted lexicographically. Define a new function `def all_orders(num_courses, prerequisites):` for this — it will be graded instead of `can_finish`; your existing code can stay.",
+          "expectedMinutes": 8,
+          "testCases": [
+            {
+              "input": "[2,[[1,0]]]",
+              "expected": "[[0,1]]"
+            },
+            {
+              "input": "[3,[[1,0],[2,1]]]",
+              "expected": "[[0,1,2]]"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[2,[[1,0],[0,1]]]",
+              "expected": "[]",
+              "description": "cycle — no valid orderings"
+            },
+            {
+              "input": "[1,[]]",
+              "expected": "[[0]]",
+              "description": "single course — exactly one ordering"
+            },
+            {
+              "input": "[4,[[1,0],[2,0],[3,1],[3,2]]]",
+              "expected": "[[0,1,2,3],[0,2,1,3]]",
+              "description": "diamond DAG — exactly two interleavings of the middle courses"
+            },
+            {
+              "input": "[3,[[2,0]]]",
+              "expected": "[[0,1,2],[0,2,1],[1,0,2]]",
+              "description": "one unconstrained course interleaves with a constrained pair"
+            },
+            {
+              "input": "[3,[]]",
+              "expected": "[[0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]]",
+              "description": "no constraints — all permutations, in sorted order"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "coin-change",
+      "title": "Coin Change",
+      "difficulty": "medium",
+      "company": [
+        "amazon",
+        "microsoft",
+        "goldman"
+      ],
+      "labels": [
+        "dynamic-programming"
+      ],
+      "entryFunction": "coin_change",
+      "candidateDescription": "You have coins of various denominations and you can use as many of each as you want. Given a target amount, find the minimum number of coins needed to make exact change. If it's not possible, return -1.",
+      "interviewerContext": "Coin Change — unbounded knapsack / bottom-up DP. Up to 12 coin types, values up to 2^31-1, amount up to 10^4.\n\nWhat the optimal path looks like: bottom-up DP table where dp[a] = fewest coins to make amount a. Initialize dp[0] = 0, rest to infinity. For each amount, try every coin. O(amount * len(coins)) time, O(amount) space. Greedy is provably wrong — classic counterexample: coins [1,3,4], amount 6. Greedy picks 4+1+1=3 coins; DP finds 3+3=2.\n\nNatural ambiguity for clarifying: candidate may ask if coins can be reused (yes, unlimited), whether amount can be 0 (yes, answer is 0), or whether there's always a solution (no, return -1 if not). All good clarifying questions.\n\nProbing cues:\n- 'Would a greedy approach work here — always picking the largest coin that fits?'\n- 'You're building up to the amount — what does each cell in your table represent, and how does a smaller subproblem feed into a larger one?'\n- 'What's the base case, and what do you initialize the rest of the table to?'\n\nStrong answer: recognizes greedy fails with a concrete example, arrives at DP framing independently, correctly sets up recurrence and initialization. Weak answer: attempts greedy without questioning it, or sets up recursive solution without memoization (exponential), or initializes dp[0] incorrectly.",
+      "starterCode": "def coin_change(coins, amount):\n    pass",
+      "testCases": [
+        {
+          "input": "[[1,2,5],11]",
+          "expected": "3"
+        },
+        {
+          "input": "[[2],3]",
+          "expected": "-1"
+        },
+        {
+          "input": "[[1],0]",
+          "expected": "0"
+        }
+      ],
+      "hiddenTestCases": [
+        {
+          "input": "[[1],2]",
+          "expected": "2",
+          "description": "single coin denomination"
+        },
+        {
+          "input": "[[2,5,10,1],27]",
+          "expected": "4",
+          "description": "10+10+5+2 = 27"
+        },
+        {
+          "input": "[[1,3,4],6]",
+          "expected": "2",
+          "description": "greedy traps — DP must beat 1+1+4"
+        },
+        {
+          "input": "[[186,419,83,408],6249]",
+          "expected": "20",
+          "description": "large amount, awkward denominations"
+        },
+        {
+          "input": "[[7,11],14]",
+          "expected": "2",
+          "description": "exact match with one denomination"
+        },
+        {
+          "input": "[[5,7,10],3]",
+          "expected": "-1",
+          "description": "amount smaller than smallest coin"
+        },
+        {
+          "input": "[[1,2,5],0]",
+          "expected": "0",
+          "description": "zero amount"
+        }
+      ],
+      "followUps": [
+        {
+          "id": "coin-change-path",
+          "entryFunction": "coin_change_path",
+          "prompt": "Instead of the count, return the actual list of coins you used to make the amount, sorted in descending order. If the amount can't be made, return an empty list. Define a new function `def coin_change_path(coins, amount):` for this — it will be graded instead of `coin_change`; your existing code can stay.",
+          "expectedMinutes": 8,
+          "testCases": [
+            {
+              "input": "[[1,2,5],11]",
+              "expected": "[5,5,1]"
+            },
+            {
+              "input": "[[2],3]",
+              "expected": "[]"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[[1,3,4],6]",
+              "expected": "[3,3]",
+              "description": "greedy trap — taking the largest coin first uses more coins"
+            },
+            {
+              "input": "[[1],0]",
+              "expected": "[]",
+              "description": "zero amount — empty list of coins"
+            },
+            {
+              "input": "[[7],7]",
+              "expected": "[7]",
+              "description": "single coin makes the exact amount"
+            },
+            {
+              "input": "[[2,5,10,1],27]",
+              "expected": "[10,10,5,2]",
+              "description": "multi-coin path reconstruction across denominations"
+            },
+            {
+              "input": "[[5,10],3]",
+              "expected": "[]",
+              "description": "impossible amount — smaller than every coin"
+            },
+            {
+              "input": "[[7,11],14]",
+              "expected": "[7,7]",
+              "description": "same denomination repeated"
+            }
+          ]
+        },
+        {
+          "id": "coin-change-limited",
+          "prompt": "Now suppose you only have one of each coin — you can't reuse them. Find the minimum number of coins to make the amount, or -1.",
+          "expectedMinutes": 10,
+          "testCases": [
+            {
+              "input": "[[1,2,5],8]",
+              "expected": "3"
+            },
+            {
+              "input": "[[2],4]",
+              "expected": "-1"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[[3,3,4],6]",
+              "expected": "2",
+              "description": "duplicate denominations are separate physical coins"
+            },
+            {
+              "input": "[[1,2,5],9]",
+              "expected": "-1",
+              "description": "amount exceeds the total of all coins"
+            },
+            {
+              "input": "[[1,2,3],0]",
+              "expected": "0",
+              "description": "zero amount"
+            },
+            {
+              "input": "[[2,5,10],10]",
+              "expected": "1",
+              "description": "exact single coin"
+            },
+            {
+              "input": "[[10,7,6,3],13]",
+              "expected": "2",
+              "description": "must find a valid pair without reusing any coin"
+            },
+            {
+              "input": "[[2,3,5],10]",
+              "expected": "3",
+              "description": "needs every coin exactly once"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "number-of-islands",
+      "title": "Number of Islands",
+      "difficulty": "medium",
+      "company": [
+        "amazon",
+        "meta",
+        "google",
+        "microsoft",
+        "bloomberg"
+      ],
+      "labels": [
+        "graphs",
+        "matrix"
+      ],
+      "entryFunction": "num_islands",
+      "candidateDescription": "You're given a grid of 1s and 0s, where 1 is land and 0 is water. Cells connect horizontally and vertically. Count how many distinct islands there are.",
+      "interviewerContext": "Number of Islands. Grid up to 300x300. An island is a connected component of 1s using 4-directional adjacency (not diagonal).\n\nWhat the optimal path looks like: DFS or BFS flood fill — iterate over every cell, when you hit an unvisited 1 increment the count and flood-fill the whole connected component (marking visited to avoid recounting). O(m*n) time and space. Union-Find is also valid and worth discussing as an alternative.\n\nNatural ambiguity for clarifying: candidate may ask about diagonal connections (not connected), whether the grid can be empty (handle it), whether they can modify the input (acceptable, but worth mentioning). All reasonable clarifications.\n\nProbing cues:\n- 'You've found a land cell — how do you make sure you don't count parts of the same island twice?'\n- 'Walk me through what happens when your DFS reaches the edge of the grid or a water cell.'\n- 'What's the space complexity of your DFS approach — what's on the call stack in the worst case?'\n\nStrong answer: frames it as connected components, picks DFS/BFS cleanly, handles visited state correctly (marking cells or using a set), discusses diagonal non-adjacency if not told. Weak answer: tries to count 1s without flood filling, confuses connected components with individual cells, or uses diagonal adjacency.",
+      "starterCode": "def num_islands(grid):\n    pass",
+      "testCases": [
+        {
+          "input": "[[[1,1,1,1,0],[1,1,0,1,0],[1,1,0,0,0],[0,0,0,0,0]]]",
+          "expected": "1"
+        },
+        {
+          "input": "[[[1,1,0,0,0],[1,1,0,0,0],[0,0,1,0,0],[0,0,0,1,1]]]",
+          "expected": "3"
+        }
+      ],
+      "hiddenTestCases": [
+        {
+          "input": "[[[0]]]",
+          "expected": "0",
+          "description": "single water cell"
+        },
+        {
+          "input": "[[[1]]]",
+          "expected": "1",
+          "description": "single land cell"
+        },
+        {
+          "input": "[[[1,0,1,0,1]]]",
+          "expected": "3",
+          "description": "1xN strip — checkerboard"
+        },
+        {
+          "input": "[[[1],[0],[1],[0],[1]]]",
+          "expected": "3",
+          "description": "Nx1 strip — checkerboard"
+        },
+        {
+          "input": "[[[1,1,1],[1,1,1],[1,1,1]]]",
+          "expected": "1",
+          "description": "all land — one island"
+        },
+        {
+          "input": "[[[0,0,0],[0,0,0]]]",
+          "expected": "0",
+          "description": "all water"
+        },
+        {
+          "input": "[[[1,0,1],[0,1,0],[1,0,1]]]",
+          "expected": "5",
+          "description": "diagonals do NOT connect — 5 islands"
+        }
+      ],
+      "followUps": [
+        {
+          "id": "number-of-islands-streaming",
+          "entryFunction": "num_islands_stream",
+          "prompt": "Now imagine the grid isn't given all at once — land cells arrive one at a time as coordinate updates. Your function now takes the grid dimensions and the updates, where positions is a list of [row, col] cells that turn to land in order. Return a list with the island count after each update; an update may repeat a cell that's already land, which leaves the count unchanged. Define a new function `def num_islands_stream(rows, cols, positions):` for this — it will be graded instead of `num_islands`; your existing code can stay.",
+          "expectedMinutes": 10,
+          "testCases": [
+            {
+              "input": "[3,3,[[0,0],[0,1],[1,2],[2,1]]]",
+              "expected": "[1,1,2,3]"
+            },
+            {
+              "input": "[1,2,[[0,0],[0,1]]]",
+              "expected": "[1,1]"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[3,3,[[0,0],[0,2],[0,1]]]",
+              "expected": "[1,2,1]",
+              "description": "new cell bridges two existing islands into one"
+            },
+            {
+              "input": "[3,3,[[0,1],[1,0],[1,2],[2,1],[1,1]]]",
+              "expected": "[1,2,3,4,1]",
+              "description": "one cell merges four islands at once"
+            },
+            {
+              "input": "[2,2,[[0,0],[0,0],[1,1]]]",
+              "expected": "[1,1,2]",
+              "description": "duplicate land update must leave the count unchanged"
+            },
+            {
+              "input": "[1,1,[[0,0]]]",
+              "expected": "[1]",
+              "description": "single-cell grid"
+            },
+            {
+              "input": "[1,5,[[0,0],[0,4],[0,2],[0,1],[0,3]]]",
+              "expected": "[1,2,3,2,1]",
+              "description": "strip filled out of order — count rises then falls through merges"
+            },
+            {
+              "input": "[3,3,[]]",
+              "expected": "[]",
+              "description": "no updates — empty result list"
+            }
+          ]
+        },
+        {
+          "id": "number-of-islands-max-size",
+          "prompt": "Same grid, but now return the size of the largest island instead of the count.",
+          "expectedMinutes": 6,
+          "testCases": [
+            {
+              "input": "[[[1,1,1,1,0],[1,1,0,1,0],[1,1,0,0,0],[0,0,0,0,0]]]",
+              "expected": "9"
+            },
+            {
+              "input": "[[[1,1,0,0,0],[1,1,0,0,0],[0,0,1,0,0],[0,0,0,1,1]]]",
+              "expected": "4"
+            }
+          ],
+          "hiddenTestCases": [
+            {
+              "input": "[[[0,0],[0,0]]]",
+              "expected": "0",
+              "description": "all water — largest island is zero"
+            },
+            {
+              "input": "[[[1]]]",
+              "expected": "1",
+              "description": "single land cell"
+            },
+            {
+              "input": "[[[1,1,0,1,1]]]",
+              "expected": "2",
+              "description": "tie between equal-size islands"
+            },
+            {
+              "input": "[[[1,1,1],[1,1,1],[1,1,1]]]",
+              "expected": "9",
+              "description": "entire grid is one island"
+            },
+            {
+              "input": "[[[1,0],[0,1]]]",
+              "expected": "1",
+              "description": "diagonal cells do not connect"
+            },
+            {
+              "input": "[[[1,0,0],[0,1,1],[0,1,0]]]",
+              "expected": "3",
+              "description": "largest island is not the first one encountered"
+            }
+          ]
+        }
+      ]
+    }
+  ]

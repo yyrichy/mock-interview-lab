@@ -46,3 +46,4 @@ next-env.d.ts
 !.env.example
 !/README.md
 !/data/questions.example.json
+!/data/questions.demo.json
