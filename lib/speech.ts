@@ -8,6 +8,9 @@ import { loadProviderKeys } from "@/lib/byok";
 
 const ELEVENLABS_MAX_TEXT_CHARS = 2200;
 
+/** ElevenLabs API keys are prefixed "sk_" (distinct from OpenAI's "sk-"). */
+const ELEVENLABS_KEY_PREFIX = "sk_";
+
 const CODE_OPERATOR_REPLACEMENTS: ReadonlyArray<[RegExp, string]> = [
   [/\s*===\s*/g, " is strictly equal to "],
   [/\s*!==\s*/g, " is not strictly equal to "],
@@ -164,7 +167,8 @@ export async function synthesizeAlexVoice(text: string): Promise<Blob> {
   // to a BYOK ElevenLabs key for the ElevenLabs engine.
   if (keys.openai) {
     headers["x-provider-key"] = keys.openai;
-  } else if (keys.elevenlabs) {
+  } else if (keys.elevenlabs && keys.elevenlabs.startsWith(ELEVENLABS_KEY_PREFIX)) {
+    // Mirror the server guard: only forward a key that looks like ElevenLabs'.
     headers["x-provider-key"] = keys.elevenlabs;
   }
 

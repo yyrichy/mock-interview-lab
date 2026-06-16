@@ -21,6 +21,9 @@ const DEFAULT_MODEL_ID = "eleven_flash_v2_5";
 const DEFAULT_OUTPUT_FORMAT = "mp3_44100_128";
 const MAX_TEXT_CHARS = 4500;
 
+/** ElevenLabs API keys are prefixed "sk_" (distinct from OpenAI's "sk-"). */
+const ELEVENLABS_KEY_PREFIX = "sk_";
+
 const OPENAI_TTS_DEFAULT_MODEL = "gpt-4o-mini-tts";
 const OPENAI_TTS_DEFAULT_VOICE = "ash";
 /** OpenAI /v1/audio/speech caps input at 4096 characters. */
@@ -112,8 +115,14 @@ async function synthesizeViaElevenLabs(
   text: string,
   requestedVoiceId: unknown
 ): Promise<NextResponse> {
-  const apiKey =
-    req.headers.get("x-provider-key") ?? process.env.ELEVENLABS_API_KEY ?? "";
+  // Only forward a BYOK header to ElevenLabs when it actually looks like an
+  // ElevenLabs key — otherwise an OpenAI (or other provider) key would be
+  // leaked to ElevenLabs as xi-api-key. A non-matching header is ignored and
+  // we fall back to the server key.
+  const headerKey = req.headers.get("x-provider-key");
+  const byokKey =
+    headerKey && headerKey.startsWith(ELEVENLABS_KEY_PREFIX) ? headerKey : null;
+  const apiKey = byokKey ?? process.env.ELEVENLABS_API_KEY ?? "";
   if (!apiKey) {
     return NextResponse.json(
       {

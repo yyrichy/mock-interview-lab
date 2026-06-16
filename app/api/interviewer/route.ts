@@ -50,10 +50,120 @@ type InterviewerRequestBody = {
   modelPresetId?: string;
 };
 
+// Hard caps on attacker-controllable payload fields, enforced before any
+// external (model) call so an oversized body can't run up cost or memory. EVERY
+// client string that lands in the system prompt is bounded here — not just the
+// obvious code/transcript blobs but the question text, follow-up prompts,
+// app-control hints, phase/segment markers, and probed-topic labels.
+const MAX_CHAT_MESSAGES = 100;
+const MAX_MESSAGE_CHARS = 8000;
+const MAX_CODE_CHARS = 15000;
+const MAX_TRANSCRIPT_CHARS = 50000;
+const MAX_SNAPSHOTS = 20;
+const MAX_SNAPSHOT_CHARS = 5000;
+const MAX_QUESTION_CHARS = 20000;
+const MAX_PROMPT_FIELD_CHARS = 8000;
+const MAX_TOPICS = 100;
+
+function payloadTooLarge(): NextResponse {
+  return NextResponse.json({ error: "payload_too_large" }, { status: 400 });
+}
+
+/** True when `value` is a string longer than `max`. Non-strings never exceed. */
+function strExceeds(value: unknown, max: number): boolean {
+  return typeof value === "string" && value.length > max;
+}
+
+/** Returns a 400 response if the request body exceeds size limits, else null. */
+function validatePayloadSize(body: InterviewerRequestBody): NextResponse | null {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  if (messages.length > MAX_CHAT_MESSAGES) {
+    return payloadTooLarge();
+  }
+  for (const m of messages) {
+    if (strExceeds(m?.content, MAX_MESSAGE_CHARS)) {
+      return payloadTooLarge();
+    }
+  }
+
+  const transcript = Array.isArray(body.transcript) ? body.transcript : [];
+  let transcriptChars = 0;
+  for (const entry of transcript) {
+    if (typeof entry?.text === "string") {
+      transcriptChars += entry.text.length;
+    }
+  }
+  if (transcriptChars > MAX_TRANSCRIPT_CHARS) {
+    return payloadTooLarge();
+  }
+
+  const state = body.sessionState;
+  if (strExceeds(state?.currentCode, MAX_CODE_CHARS)) {
+    return payloadTooLarge();
+  }
+
+  const snapshots = Array.isArray(state?.snapshots) ? state.snapshots : [];
+  if (snapshots.length > MAX_SNAPSHOTS) {
+    return payloadTooLarge();
+  }
+  for (const snap of snapshots) {
+    if (
+      strExceeds(snap?.code, MAX_SNAPSHOT_CHARS) ||
+      strExceeds(snap?.transcript, MAX_SNAPSHOT_CHARS)
+    ) {
+      return payloadTooLarge();
+    }
+  }
+
+  // Every remaining client string that the system prompt interpolates.
+  const question = state?.question;
+  if (
+    strExceeds(question?.title, MAX_PROMPT_FIELD_CHARS) ||
+    strExceeds(question?.candidateDescription, MAX_QUESTION_CHARS)
+  ) {
+    return payloadTooLarge();
+  }
+
+  const activeFollowUp = state?.activeFollowUp;
+  if (
+    strExceeds(activeFollowUp?.prompt, MAX_PROMPT_FIELD_CHARS) ||
+    strExceeds(activeFollowUp?.entryFunction, MAX_PROMPT_FIELD_CHARS)
+  ) {
+    return payloadTooLarge();
+  }
+
+  if (
+    strExceeds(state?.codingEscalationHint, MAX_PROMPT_FIELD_CHARS) ||
+    strExceeds(state?.finalFollowUpHint, MAX_PROMPT_FIELD_CHARS) ||
+    strExceeds(state?.submitReviewHint, MAX_PROMPT_FIELD_CHARS) ||
+    strExceeds(state?.followUpSegment, MAX_PROMPT_FIELD_CHARS) ||
+    strExceeds(state?.phase, MAX_PROMPT_FIELD_CHARS)
+  ) {
+    return payloadTooLarge();
+  }
+
+  const topics = Array.isArray(state?.topicsProbed) ? state.topicsProbed : [];
+  if (topics.length > MAX_TOPICS) {
+    return payloadTooLarge();
+  }
+  for (const topic of topics) {
+    if (strExceeds(topic, MAX_PROMPT_FIELD_CHARS)) {
+      return payloadTooLarge();
+    }
+  }
+
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as InterviewerRequestBody;
     const { sessionState, messages, transcript, turnCount } = body;
+
+    const tooLarge = validatePayloadSize(body);
+    if (tooLarge) {
+      return tooLarge;
+    }
 
     // Resolve which provider/model to run the agent on from the UI preset.
     const modelPresetId =

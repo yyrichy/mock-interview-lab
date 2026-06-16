@@ -40,6 +40,81 @@ function jsonError(message: string, status: number) {
   return Response.json({ error: message }, { status });
 }
 
+// Hard caps on attacker-controllable payload fields, enforced before the model
+// call so an oversized body can't run up cost or memory. EVERY client string
+// that reaches the feedback prompt is bounded here — not just the obvious
+// code/transcript blobs but the problem statement, dry-run trace, snapshot
+// transcript notes, and follow-up variant prompts.
+const MAX_CHAT_MESSAGES = 100;
+const MAX_MESSAGE_CHARS = 8000;
+const MAX_CODE_CHARS = 15000;
+const MAX_TRANSCRIPT_CHARS = 50000;
+const MAX_SNAPSHOTS = 20;
+const MAX_SNAPSHOT_CHARS = 5000;
+const MAX_QUESTION_CHARS = 20000;
+const MAX_TRACE_CHARS = 20000;
+const MAX_PROMPT_FIELD_CHARS = 8000;
+const MAX_FOLLOWUP_VARIANTS = 20;
+
+/** True when `value` is a string longer than `max`. Non-strings never exceed. */
+function strExceeds(value: unknown, max: number): boolean {
+  return typeof value === "string" && value.length > max;
+}
+
+/** Returns a 400 response if the request body exceeds size limits, else null. */
+function validatePayloadSize(body: FeedbackBody): Response | null {
+  const tooLarge = () => jsonError("payload_too_large", 400);
+
+  const chatHistory = Array.isArray(body.chatHistory) ? body.chatHistory : [];
+  if (chatHistory.length > MAX_CHAT_MESSAGES) {
+    return tooLarge();
+  }
+  for (const m of chatHistory) {
+    if (strExceeds(m?.content, MAX_MESSAGE_CHARS)) {
+      return tooLarge();
+    }
+  }
+
+  if (
+    strExceeds(body.fullTranscript, MAX_TRANSCRIPT_CHARS) ||
+    strExceeds(body.finalCode, MAX_CODE_CHARS) ||
+    strExceeds(body.question, MAX_QUESTION_CHARS) ||
+    strExceeds(body.traceContent, MAX_TRACE_CHARS)
+  ) {
+    return tooLarge();
+  }
+
+  const snapshots = Array.isArray(body.snapshots) ? body.snapshots : [];
+  if (snapshots.length > MAX_SNAPSHOTS) {
+    return tooLarge();
+  }
+  for (const snap of snapshots) {
+    if (
+      strExceeds(snap?.code, MAX_SNAPSHOT_CHARS) ||
+      strExceeds(snap?.transcript, MAX_SNAPSHOT_CHARS)
+    ) {
+      return tooLarge();
+    }
+  }
+
+  const variants = Array.isArray(body.followUpVariants)
+    ? body.followUpVariants
+    : [];
+  if (variants.length > MAX_FOLLOWUP_VARIANTS) {
+    return tooLarge();
+  }
+  for (const v of variants) {
+    if (
+      strExceeds(v?.prompt, MAX_PROMPT_FIELD_CHARS) ||
+      strExceeds(v?.entryFunction, MAX_PROMPT_FIELD_CHARS)
+    ) {
+      return tooLarge();
+    }
+  }
+
+  return null;
+}
+
 function isInterviewLevel(v: unknown): v is InterviewLevel {
   return v === "intern" || v === "new-grad" || v === "mid" || v === "senior";
 }
@@ -101,6 +176,11 @@ export async function POST(req: Request) {
     body = (await req.json()) as FeedbackBody;
   } catch {
     return jsonError("Invalid JSON body", 400);
+  }
+
+  const tooLarge = validatePayloadSize(body);
+  if (tooLarge) {
+    return tooLarge;
   }
 
   const resolved = getAiModelConfig(body.modelPresetId);
