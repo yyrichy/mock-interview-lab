@@ -239,6 +239,12 @@ export function FeedbackScreen({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
       <div className="min-w-0 flex-1 px-5 py-6 lg:overflow-y-auto lg:px-8">
+        <Link
+          href="/"
+          className="mb-4 inline-flex items-center gap-1 text-[13px] text-zinc-400 underline decoration-zinc-700 underline-offset-4 transition hover:text-zinc-200"
+        >
+          ← Back to home
+        </Link>
         <h2 className="text-base font-semibold text-zinc-100">
           Your interview feedback
         </h2>

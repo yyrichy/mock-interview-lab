@@ -345,7 +345,10 @@ export function InterviewWorkspace({ question }: Props) {
   const firstTestRunConsumedRef = useRef(false);
   const followUpAutoCloseByTimeCheckedRef = useRef(false);
 
-  const roundNowTick = useTickInterval(roundStartTime !== null, 1000);
+  const roundNowTick = useTickInterval(
+    roundStartTime !== null && sessionPhase !== "feedback",
+    1000
+  );
   const codingNowTick = useTickInterval(
     sessionPhase === "coding" && codingStartedAt !== null,
     1000
@@ -2450,8 +2453,10 @@ export function InterviewWorkspace({ question }: Props) {
       ? formatElapsedMs(codingNowTick - codingStartedAt)
       : null;
 
+  // Round is over once feedback is showing — freeze the tick (above) and drop the
+  // countdown so the clock stops instead of ticking down on the scorecard.
   const roundRemainingMs =
-    roundStartTime !== null
+    roundStartTime !== null && sessionPhase !== "feedback"
       ? Math.max(0, ROUND_DURATION_MS - (roundNowTick - roundStartTime))
       : null;
   const roundCountdownLabel =
