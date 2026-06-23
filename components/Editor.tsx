@@ -15,7 +15,7 @@ type Props = {
   initialValue: string;
   className?: string;
   readOnly?: boolean;
-  /** Pad realism: disables minimap, autocomplete, bracket hints; blocks paste. */
+  /** Pad realism: disables autocomplete, bracket hints; blocks paste. */
   padRealism?: boolean;
   onChange?: (value: string) => void;
 };
@@ -43,7 +43,8 @@ export function Editor({ initialValue, className, readOnly, padRealism, onChange
           onChange={(value) => onChange?.(value ?? "")}
           options={{
             fontSize: 14,
-            minimap: { enabled: !isPad },
+            // Minimap adds clutter and no value for short interview solutions.
+            minimap: { enabled: false },
             scrollBeyondLastLine: false,
             automaticLayout: true,
             tabSize: 4,

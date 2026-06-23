@@ -110,6 +110,35 @@ function phaseLabel(phase: SessionPhase): string {
   }
 }
 
+// One-line "what do I do now" guidance for the phase banner. Keeps a new user
+// oriented when the small top-right phase pill is easy to miss.
+function phaseGuidance(phase: SessionPhase): { text: string; classes: string } {
+  switch (phase) {
+    case "clarifying":
+      return {
+        text: "Talk to Alex in the chat — ask any clarifying questions. The editor unlocks once you start.",
+        classes: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+      };
+    case "planning":
+      return {
+        text: "Plan with Alex in the chat — describe your approach. The editor unlocks when he says to start coding.",
+        classes: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+      };
+    case "coding":
+      return {
+        text: "Code your solution — Run self-checks the visible examples; Submit (in chat) runs the full evaluation.",
+        classes: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+      };
+    case "followUp":
+      return {
+        text: "Follow-up — reply to Alex in the chat; he moves you on when the discussion wraps.",
+        classes: "border-violet-500/30 bg-violet-500/10 text-violet-200",
+      };
+    case "feedback":
+      return { text: "", classes: "" };
+  }
+}
+
 function formatTranscriptLog(entries: TranscriptEntry[]): string {
   if (entries.length === 0) {
     return "";
@@ -2522,6 +2551,7 @@ export function InterviewWorkspace({ question }: Props) {
         ? `Over ${phaseLabel(sessionPhase)} budget (~${Math.round(phaseBudgetForHeader / 60_000)}m) — move on soon`
         : `Suggested ${phaseLabel(sessionPhase)} budget ~${Math.round(phaseBudgetForHeader / 60_000)}m`
       : `${phaseLabel(sessionPhase)} phase`;
+  const guidance = phaseGuidance(sessionPhase);
 
   if (sessionBoot === "pending") {
     return (
@@ -2582,6 +2612,12 @@ export function InterviewWorkspace({ question }: Props) {
           >
             Reset session
           </button>
+          {sessionPhase !== "feedback" && (
+            <ChatToggleButton
+              chatOpen={chatOpen}
+              onClick={() => setChatOpen((o) => !o)}
+            />
+          )}
         </div>
       </header>
       {sessionPhase === "feedback" ? (
@@ -2592,6 +2628,13 @@ export function InterviewWorkspace({ question }: Props) {
           questionTitle={question.title}
         />
       ) : (
+      <>
+      <div
+        className={`shrink-0 border-b px-3 py-1.5 text-xs ${guidance.classes}`}
+      >
+        <span className="font-semibold">{phaseLabel(sessionPhase)}:</span>{" "}
+        {guidance.text}
+      </div>
       <div className="flex min-h-0 flex-1">
         <div
           className={`flex min-h-0 min-w-0 flex-col transition-[width] duration-200 ease-out ${
@@ -2732,9 +2775,7 @@ export function InterviewWorkspace({ question }: Props) {
           </div>
         )}
       </div>
-      )}
-      {sessionPhase !== "feedback" && (
-        <ChatToggleButton chatOpen={chatOpen} onClick={() => setChatOpen((o) => !o)} />
+      </>
       )}
     </div>
   );

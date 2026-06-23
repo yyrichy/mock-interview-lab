@@ -103,6 +103,10 @@ export function ChatPanel({
   const [draft, setDraft] = useState("");
   const [micHeld, setMicHeld] = useState(false);
   const [byokOpen, setByokOpen] = useState(false);
+  // Model picker + dev toggles are power-user settings — hidden by default so a
+  // first-time candidate isn't asked to choose a model or decode jargon. The
+  // hosted default model and sensible toggle defaults apply until opened.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Ambient transcript is collapsed by default so it doesn't clutter the coding
   // view; the candidate expands it with the chevron when they want to read back.
   const [voiceLogOpen, setVoiceLogOpen] = useState(false);
@@ -327,52 +331,8 @@ export function ChatPanel({
             </p>
           </div>
 
-          {/* Row 2: model pickers */}
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="flex shrink-0 flex-col gap-0.5">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                Interviewer
-              </span>
-              <select
-                value={modelPresetId}
-                onChange={(e) =>
-                  onModelPresetIdChange(e.target.value as AiModelPresetId)
-                }
-                disabled={inputDisabled}
-                className="max-w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label="Interviewer AI model"
-              >
-                {AI_MODEL_OPTIONS.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {/* Row 3: checkboxes */}
-          <div className="flex gap-4">
-            <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
-              <input
-                type="checkbox"
-                checked={padRealism}
-                onChange={(e) => onPadRealismChange(e.target.checked)}
-                disabled={inputDisabled}
-                className="accent-emerald-500"
-              />
-              Pad realism
-            </label>
-            <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
-              <input
-                type="checkbox"
-                checked={humanLatency}
-                onChange={(e) => onHumanLatencyChange(e.target.checked)}
-                disabled={inputDisabled}
-                className="accent-emerald-500"
-              />
-              Human latency
-            </label>
+          {/* Row 2: always-visible voice control + Advanced disclosure */}
+          <div className="flex items-center gap-4">
             <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
               <input
                 type="checkbox"
@@ -392,7 +352,72 @@ export function ChatPanel({
                 {ttsStatus === "loading" ? "Cancel voice" : "Stop voice"}
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((o) => !o)}
+              aria-expanded={advancedOpen}
+              className="ml-auto flex shrink-0 items-center gap-1 text-[11px] text-zinc-500 transition hover:text-zinc-300"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden
+                className={`h-3 w-3 shrink-0 transition-transform ${
+                  advancedOpen ? "rotate-90" : ""
+                }`}
+              >
+                <path d="M16.28 11.47a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 0 1-1.06-1.06L14.69 12 7.72 5.03a.75.75 0 0 1 1.06-1.06l7.5 7.5Z" />
+              </svg>
+              Advanced
+            </button>
           </div>
+
+          {/* Row 3: advanced settings — model picker + dev toggles, collapsed by default */}
+          {advancedOpen && (
+            <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+              <label className="flex shrink-0 flex-col gap-0.5">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  Interviewer
+                </span>
+                <select
+                  value={modelPresetId}
+                  onChange={(e) =>
+                    onModelPresetIdChange(e.target.value as AiModelPresetId)
+                  }
+                  disabled={inputDisabled}
+                  className="max-w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Interviewer AI model"
+                >
+                  {AI_MODEL_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={padRealism}
+                  onChange={(e) => onPadRealismChange(e.target.checked)}
+                  disabled={inputDisabled}
+                  className="accent-emerald-500"
+                />
+                Pad realism
+              </label>
+              <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={humanLatency}
+                  onChange={(e) => onHumanLatencyChange(e.target.checked)}
+                  disabled={inputDisabled}
+                  className="accent-emerald-500"
+                />
+                Human latency
+              </label>
+            </div>
+          )}
         </div>
       </div>
 
@@ -532,7 +557,7 @@ export function ChatPanel({
         <div ref={bottomRef} aria-hidden className="h-px shrink-0" />
       </div>
 
-      <div className="shrink-0 space-y-2 border-t border-zinc-800 p-3 pr-14">
+      <div className="shrink-0 space-y-2 border-t border-zinc-800 p-3">
         {ttsError && (
           <div className="flex items-start gap-2 rounded-lg border border-amber-900/80 bg-amber-950/40 px-3 py-2 text-xs text-amber-100">
             <p className="min-w-0 flex-1 leading-snug">

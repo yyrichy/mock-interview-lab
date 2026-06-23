@@ -227,9 +227,13 @@ export function questionToEditorInitialValue(question: PublicQuestion): string {
   if (question.testCases.length > 0) {
     lines.push("#");
     lines.push("# Test cases (examples):");
-    for (const tc of question.testCases) {
-      lines.push(`#   input: ${tc.input}  →  expected: ${tc.expected}`);
-    }
+    // Input and expected go on separate comment lines: a long input that
+    // word-wraps in the editor can't push the expected value onto its own
+    // unindented line where it reads like stray code.
+    question.testCases.forEach((tc, i) => {
+      lines.push(`#   ${i + 1}. input:    ${tc.input}`);
+      lines.push(`#      expected: ${tc.expected}`);
+    });
   }
   lines.push("#");
   lines.push("");
