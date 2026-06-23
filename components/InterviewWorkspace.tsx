@@ -70,6 +70,7 @@ import { getRoundThresholds } from "@/lib/round-config";
 import {
   questionToEditorInitialValue,
   questionToProblemStatement,
+  resolveFollowUpTestSets,
   type PublicQuestion,
 } from "@/lib/questions";
 import { assistantInvitesCodingWithoutToken } from "@/lib/planning-coding-invite";
@@ -324,9 +325,16 @@ export function InterviewWorkspace({ question }: Props) {
   } | null>(null);
   // The variant the candidate is actively working on. Sent on every turn's
   // SessionState so the model never loses track of which task the conversation
-  // is about. Set at nudge delivery, cleared when the variant's segment wraps
-  // (advanceAfterSegmentComplete) and on reset.
+  // is about. Set when a variant is scheduled for coding, cleared when the
+  // variant's segment wraps (advanceAfterSegmentComplete) and on reset.
   const activeFollowUpRef = useRef<ActiveFollowUp | null>(null);
+  const [activeFollowUpTask, setActiveFollowUpTask] =
+    useState<ActiveFollowUp | null>(null);
+
+  function commitActiveFollowUp(next: ActiveFollowUp | null): void {
+    activeFollowUpRef.current = next;
+    setActiveFollowUpTask(next);
+  }
   const [forcedWrap, setForcedWrap] = useState(false);
   const forcedWrapRef = useRef(false);
   const forcedWrapHintPendingRef = useRef(false);
@@ -360,6 +368,19 @@ export function InterviewWorkspace({ question }: Props) {
     }
     return isMediaRecorderCaptureSupported();
   }, []);
+
+  const gradedEntryFunction = useMemo(
+    () =>
+      resolveFollowUpTestSets(
+        {
+          ...question,
+          interviewerContext: "",
+          hiddenTestCases: [],
+        },
+        activeFollowUpTask?.id ?? null
+      ).entryFunction,
+    [question, activeFollowUpTask]
+  );
 
   const defaultInitialValue = questionToEditorInitialValue(question);
   const codeRef = useRef(defaultInitialValue);
@@ -404,7 +425,7 @@ export function InterviewWorkspace({ question }: Props) {
         followUpSegmentRef.current = "final";
       }
       roundTimedOutRef.current = saved.roundTimedOut;
-      activeFollowUpRef.current = saved.activeFollowUp;
+      commitActiveFollowUp(saved.activeFollowUp);
       baselineSolvedAtRef.current = saved.baselineSolvedAt;
       codingEscalationStepRef.current = saved.codingEscalationStep;
       bruteForceSkippedRef.current = saved.bruteForceSkipped;
@@ -816,7 +837,7 @@ export function InterviewWorkspace({ question }: Props) {
           ? {
               ...m,
               content:
-                "[Alex didn't send a reply. Try again or switch model.]",
+                "[Alex didn't respond — usually a model or tool glitch. Send your message again, or switch model in the Model menu.]",
             }
           : m
       )
@@ -828,7 +849,7 @@ export function InterviewWorkspace({ question }: Props) {
    * [segment-complete] and is advancing) but had nothing to say, its bubble is
    * empty after the token is stripped. That is NOT weak-caller silence — the model
    * intentionally closed the segment — so remove the stray empty bubble instead of
-   * sealing it with the "didn't send a reply" fallback. This keeps the
+   * sealing it with the empty-reply fallback. This keeps the
    * final→feedback handoff (and the slice→final / variant-skip seams) clean:
    * feedback / the next segment opens directly after the real wrap, with no empty
    * interviewer turn between. A bubble that has prose is left untouched.
@@ -1060,8 +1081,9 @@ export function InterviewWorkspace({ question }: Props) {
       remainingMs > FOLLOW_UP_VARIANT_FULL_ROUND_MIN_REMAINING_MS
         ? "code"
         : "verbal";
-    // The index advance + active-task identity are staged here and committed by
-    // runCodingEscalationNudge only after the introduction turn actually completes.
+    // The index advance is still committed by runCodingEscalationNudge after the
+    // introduction turn completes; active-task identity is set now so Run/Submit
+    // grade the variant immediately (not after Alex finishes speaking).
     pendingProactiveBankedCommitRef.current = {
       nextIndex: pending.index + 1,
       active: {
@@ -1072,6 +1094,7 @@ export function InterviewWorkspace({ question }: Props) {
         mode,
       },
     };
+    commitActiveFollowUp(pendingProactiveBankedCommitRef.current.active);
     pendingProactiveEscalationHintRef.current = buildBankedEscalationHint(
       pending.followUp,
       mode
@@ -1217,7 +1240,9 @@ export function InterviewWorkspace({ question }: Props) {
               // pre-solve-skipped it ([segment-complete] on the intro turn) —
               // the segment is already over and the advance is queued.
               if (!segmentWrapped) {
-                activeFollowUpRef.current = bankedCommit.active;
+                commitActiveFollowUp(bankedCommit.active);
+              } else {
+                commitActiveFollowUp(null);
               }
             }
             const next = followUpsReachedCountRef.current + 1;
@@ -1976,7 +2001,7 @@ export function InterviewWorkspace({ question }: Props) {
     // Baseline solved → the segment that just wrapped is over, so whatever
     // variant it was about is no longer the active task. The next delivery
     // re-sets it; final Q&A runs with no active variant.
-    activeFollowUpRef.current = null;
+    commitActiveFollowUp(null);
 
     // Advance: next banked variant if one fits, else final Q&A.
     const pending = getPendingBankedFollowUp(
@@ -2040,7 +2065,9 @@ export function InterviewWorkspace({ question }: Props) {
       lastSubmittedCodeRef.current === normalizedSubmission
     ) {
       if (lastSubmitOutcomeRef.current) {
-        setSubmitOutcome(`Already submitted — ${lastSubmitOutcomeRef.current}`);
+        setSubmitOutcome(
+          `Same code as your last submit (${lastSubmitOutcomeRef.current}) — edit your solution first, or keep chatting with Alex.`
+        );
       }
       return;
     }
@@ -2402,7 +2429,7 @@ export function InterviewWorkspace({ question }: Props) {
     pendingProactiveEscalationHintRef.current = null;
     pendingProactiveBankedRef.current = false;
     pendingProactiveBankedCommitRef.current = null;
-    activeFollowUpRef.current = null;
+    commitActiveFollowUp(null);
     pendingSegmentAdvanceRef.current = false;
     streamingAssistantIdRef.current = null;
     setStreamingAssistantId(null);
@@ -2587,7 +2614,7 @@ export function InterviewWorkspace({ question }: Props) {
                 <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-800 bg-zinc-900/80 px-3 py-2">
                   <span className="mr-auto text-[11px] text-zinc-500">
                     {runMode !== "dry-run"
-                      ? "Run = visible self-check · Submit (in chat) = full evaluation"
+                      ? `Run/Submit grade \`${gradedEntryFunction}()\` · Run = visible self-check · Submit (in chat) = full evaluation`
                       : "Trace mode (no execution)"}
                   </span>
                   <label className="flex items-center gap-1 text-[11px] text-zinc-500">

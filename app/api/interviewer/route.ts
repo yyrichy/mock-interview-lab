@@ -448,6 +448,32 @@ export async function POST(req: NextRequest) {
           },
         });
         writer.merge(result.toUIMessageStream());
+        // Tool-only turns can finish with zero candidate-facing text despite the
+        // prompt. One plain-text retry keeps the interview from going silent.
+        // These empties cluster at segment transitions (a weak caller loops on a
+        // grounding tool while deciding whether to wrap), so the retry must be
+        // allowed to wrap with [segment-complete] — forbidding it leaves the
+        // interview stuck filling the bubble but never advancing into final Q&A /
+        // feedback. Disabling tools is what breaks the loop; transitions are a
+        // text token, not a tool, so they are unaffected.
+        const spoken = (await result.text).trim();
+        if (spoken.length === 0) {
+          if (process.env.NODE_ENV === "development") {
+            console.warn(
+              "[interviewer-agent] empty reply — forcing plain-text fallback"
+            );
+          }
+          const fallback = streamText({
+            model,
+            maxOutputTokens: INTERVIEWER_MAX_OUTPUT_TOKENS,
+            system: `${system}\n\n[Your previous turn produced no candidate-facing reply. Respond now in plain text and do NOT call any tools. If you were closing out this segment (e.g. wrapping a review or the final Q&A), end your reply with [segment-complete] on its own final line so the interview can advance. Otherwise reply to the candidate naturally — a brief acknowledgement plus at most one question.]`,
+            messages: contextMessages,
+            tools: {},
+            toolChoice: "none",
+            abortSignal: req.signal,
+          });
+          writer.merge(fallback.toUIMessageStream());
+        }
       },
     });
 

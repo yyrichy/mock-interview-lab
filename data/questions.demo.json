@@ -606,7 +606,8 @@
         },
         {
           "id": "coin-change-limited",
-          "prompt": "Now suppose you only have one of each coin — you can't reuse them. Find the minimum number of coins to make the amount, or -1.",
+          "entryFunction": "coin_change_limited",
+          "prompt": "Now suppose you only have one of each coin — you can't reuse them. Find the minimum number of coins to make the amount, or -1. Define a new function `def coin_change_limited(coins, amount):` for this — it will be graded instead of `coin_change`; your existing code can stay.",
           "expectedMinutes": 10,
           "testCases": [
             {
@@ -770,7 +771,8 @@
         },
         {
           "id": "number-of-islands-max-size",
-          "prompt": "Same grid, but now return the size of the largest island instead of the count.",
+          "entryFunction": "largest_island",
+          "prompt": "Same grid, but now return the size of the largest island instead of the count. Define a new function `def largest_island(grid):` for this — it will be graded instead of `num_islands`; your existing code can stay.",
           "expectedMinutes": 6,
           "testCases": [
             {
