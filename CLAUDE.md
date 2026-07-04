@@ -2,21 +2,23 @@
 
 @AGENTS.md
 
-`AGENTS.md` (imported above) holds the working principles, the core principle,
-the hard rules, and the stop condition. This file is the architecture map and
-the conventions — *where things live*. Read `AGENTS.md` for how to behave; read
-this for how the codebase is shaped.
+`AGENTS.md` (imported above) holds the operating mode, judgment defaults, core
+principle, hard rules, and stop condition. This file is the architecture map —
+*where things live*. `PROJECT-NOTES.md` is the long-form design narrative;
+`docs/CHANGES.md` is the changelog (dated entries, newest first — every job
+adds one). If this map contradicts the source, the source is right; fix the map
+in the same job.
 
 ---
 
 ## Commands
 
 ```bash
-npm run dev      # start dev server — always use this, never npm run build
-npm run lint     # run ESLint — the gate for "done"
+npm run dev      # start dev server — always this, never npm run build
+npm run lint     # ESLint — the gate for "done"
 ```
 
-No test suite. Validate behavior end-to-end with `npm run dev`.
+No test suite. Behavior is validated end-to-end with `npm run dev` (by the human).
 
 ---
 
@@ -28,11 +30,11 @@ and serves objective evidence the model could not otherwise see:
 - **Code execution** — Judge0 runs the candidate's Python against visible + hidden tests.
 - **Hidden correctness** — hidden cases catch edge bugs the candidate (and chat) would miss.
 - **Timing** — elapsed phase/round time, sent to the model as context.
-- **Voice think-aloud** — OpenAI Whisper ambient + focused transcription.
+- **Voice think-aloud** — ambient + focused transcription during coding.
 - **Snapshots** — how the solution evolved over the coding phase.
 - **Grounded feedback** — final assessment built from transcript + snapshots + test history + pace.
 
-This is the concrete form of *Simplicity First*: if a change makes none of these
+This is the concrete form of *Simplicity first*: if a change makes none of these
 layers better and the conversation no more natural, it probably shouldn't be made.
 
 ---
@@ -44,24 +46,38 @@ layers better and the conversation no more natural, it probably shouldn't be mad
 Single route, single agent context, every conversational turn for every phase.
 Vercel AI SDK 6 `streamText` with tool calling. System prompt + live state in,
 natural interviewer text out. The model decides from state when to clarify, ask
-for an approach, let the candidate code, probe follow-ups, or wrap up — these are
-not separate endpoints.
+for an approach, let the candidate code, probe follow-ups, or wrap up — these
+are not separate endpoints.
 
-Files: `lib/interviewer-prompt.ts` (system prompt + context assembly),
-`lib/interviewer-tools.ts` (grounding tools), `lib/interviewer-model.ts`,
-`lib/interviewer-presets.ts`.
+Files: `lib/interviewer-prompt.ts` (system prompt + per-turn context assembly),
+`lib/interviewer-tools.ts` (grounding tools), `lib/interviewer-model.ts`
+(per-turn provider/model resolution), `lib/interviewer-presets.ts`. Turn
+output is capped (`INTERVIEWER_MAX_OUTPUT_TOKENS`, `lib/interview-limits.ts`).
+The route also carries the weak-caller guards: failure-streak force-text step
+guard and an empty-reply plain-text fallback stream (tools disabled) so a turn
+never ends with a blank bubble.
 
-The old `/api/ai` scripted-moment route and `lib/ai.ts` are gone; their interview
-wording was lifted into the per-phase system prompt, and the model now produces
-those moments from state. Don't reintroduce a scripted path.
+### Phase: UI metadata, advanced by inline tokens
 
-### Phase is app metadata, not a handcuff
+Five phases (`lib/chat.ts`): `clarifying → planning → coding → followUp →
+feedback`. Phase drives the UI only (editor lock, timers, which controls show).
+`InterviewWorkspace` owns phase and is the only place it mutates. The model
+never changes phase through a tool — it emits inline text tokens the client
+strips and acts on:
 
-`SessionPhase` drives the UI only (editor lock before coding, timers, which
-controls show). `InterviewWorkspace` owns phase and is the only place it mutates.
-Current phase + elapsed time go to the model as plain context; the model does NOT
-change phase, and tools are NOT filtered by phase. Editor is locked during
-`clarifying`/`planning`, unlocked from `coding` onward, never re-locked.
+- `[->planning]` — done clarifying, move to approach
+- `[->coding]` — plan sufficient, unlock the editor
+- `[segment-complete]` — a review / follow-up segment is finished, advance
+
+Fallback: `lib/planning-coding-invite.ts` advances to coding if the model
+verbally releases the candidate but forgets the token. Soft per-phase budgets
+(`lib/phase-config.ts`: clarifying 5 min, planning 8 min, coding 35 min) inject
+a one-time nudge when exceeded. Round length and forced-wrap thresholds:
+`lib/interview-limits.ts` (60-min round) + `lib/round-config.ts` (forced verbal
+wrap-up at 15 min remaining; follow-up floor 10 min, which wins ties). Editor
+is locked during `clarifying`/`planning`, unlocked from `coding` onward, never
+re-locked. The `followUp` phase has two segments: `slice` (mid-coding review)
+and `final` (end-of-round Q&A).
 
 ### Grounding tools (`lib/interviewer-tools.ts`)
 
@@ -72,63 +88,97 @@ Evidence/execution only. No control tools, no phase gating.
 | `read_current_code` | Exact current editor contents — call before commenting on code |
 | `read_recent_transcript` | Last N transcript lines, on demand |
 | `get_test_results` | Last Judge0 run (hidden case input/expected redacted) |
-| `run_tests` | Execute via Judge0 (respects `TEST_RUNS_MAX` from `lib/interview-limits.ts`) |
+| `run_tests` | Execute via Judge0 (respects `TEST_RUNS_MAX`) |
+
+### Run vs Submit, and follow-up grading
+
+Run (visible self-check) and Submit (visible + hidden grade) share one counter,
+`TEST_RUNS_MAX` (10/session). Run is hard-blocked at the cap; Submit is NEVER
+blocked — the candidate can always say "evaluate me" — it just still counts.
+When a follow-up variant is active, Run/Submit send `followUpId` and
+`resolveFollowUpTestSets` (`lib/questions.ts`) grades against the variant's own
+`entryFunction`/`testCases`/`hiddenTestCases` when present, else the baseline's.
+Active-variant identity is app-owned state (`ActiveFollowUp` in
+`lib/session-state.ts`), set when a variant is scheduled and sent to the model
+every turn while live.
 
 ### Final feedback — `POST /api/feedback`
 
 The one legitimately non-conversational, evidence-heavy job. A single grounded
-generation over the full transcript, snapshots, test-run history, final code, and
-pace — not part of the turn-by-turn loop, uncapped in output. It must cite real
-evidence ("solved baseline in 14 min, failed hidden empty-input twice, went quiet
-during coding"), never generic praise.
+generation (`lib/feedback.ts`) over the full transcript, snapshots, test-run
+history, final code, and pace — not part of the turn-by-turn loop, uncapped in
+output. It must cite real evidence ("solved baseline in 14 min, failed hidden
+empty-input twice, went quiet during coding"), never generic praise.
+`lib/coding-voice-report.ts` counts think-aloud during coding and hard-caps the
+communication score when it's negligible.
 
 ### Context per turn
 
 ```
-System prompt + question (candidate-facing only)   ~800 tokens   always
-Active follow-up variant (durable task identity)   ~150 tokens   while a variant is live
-FULL chat history, verbatim                        grows         always
-Current code                                       ~300 tokens   coding/followUp
-Phase + elapsed time + last test summary           ~150 tokens   always
-Transcript                                         on demand     via tool
+System prompt + question (candidate-facing only)   always
+Active follow-up variant (durable task identity)   while a variant is live
+FULL chat history, verbatim                        always
+Current code                                       coding/followUp
+Phase + elapsed time + last test summary           always
+Transcript                                         on demand, via tool
 ```
 
-No rolling summary, no summary model. The transcript is small; full history goes
-verbatim every turn so the model's memory is exact — lossy compression erased
-task identity (which variant is active). Don't reintroduce summarization or
-history windowing.
+No rolling summary, no summary model. The transcript is small; full history
+goes verbatim every turn so the model's memory is exact — lossy compression
+erased task identity (which variant is active). Don't reintroduce
+summarization or history windowing.
 
 ### AI providers
 
-Uniform adapters under `lib/providers/*`. Presets in `lib/ai-models.ts` (add
-models there only). BYOK via `components/ByokDrawer.tsx` → localStorage →
-`x-provider-key` header; server prefers header over env, never logs/persists.
-Interviewer default OpenAI GPT-5.4 Mini; Groq/Gemini/Anthropic via BYOK.
-Interviewer turns are output-capped (`INTERVIEWER_MAX_OUTPUT_TOKENS`); the
-feedback path is uncapped.
+Uniform adapters under `lib/providers/*` (OpenAI, Groq, Gemini, Anthropic).
+Presets in `lib/ai-models.ts` (add models there only); default is
+`openai-gpt-5.4-mini`. BYOK via `components/ByokDrawer.tsx` → localStorage →
+`x-provider-key` header; server (`lib/resolve-provider-key.ts`) prefers header
+over env, never logs/persists.
 
 ### Speech — OpenAI (transcription + TTS)
 
-Ambient (coding phase): `lib/groq-ambient.ts` + `useGroqAmbient` → 30s chunks →
-`POST /api/transcribe`. Focused mic: `useFocusMicRecorder` → single blob →
-`/api/transcribe`. Transcription proxies OpenAI `gpt-4o-mini-transcribe` on
-`OPENAI_API_KEY` (or a prefix-validated BYOK OpenAI `x-provider-key`) — the
-`groq-*` file/hook names are historical; there is no Groq in the speech path.
-TTS (`/api/tts`) defaults to OpenAI `gpt-4o-mini-tts`, or ElevenLabs when
-`ELEVENLABS_API_KEY` is set / `TTS_PROVIDER=elevenlabs`. `/api/transcribe` is
-fixed; `/api/tts` is the one speech route with a provider switch (text in,
-audio/mpeg out).
+Ambient (coding phase): `lib/groq-ambient.ts` + `useGroqAmbient` → ~30s chunks
+→ `POST /api/transcribe`. Focused mic: `useFocusMicRecorder` → single blob →
+same route. Transcription proxies OpenAI `gpt-4o-mini-transcribe` on
+`OPENAI_API_KEY` (or a prefix-validated BYOK OpenAI key) — the `groq-*`
+file/hook names are historical; there is no Groq in the speech path. TTS
+(`/api/tts`): one contract (text in, `audio/mpeg` out), OpenAI
+`gpt-4o-mini-tts` by default, ElevenLabs when its key is set or
+`TTS_PROVIDER=elevenlabs`.
 
 ### Code execution — do not touch
 
-`POST /api/judge0` → `lib/judge0.ts` → Judge0 via RapidAPI. Python only (lang 71).
-`withRetry` (3 attempts, 800ms backoff). Working grounding layer — leave it alone.
+`POST /api/judge0` → `lib/judge0.ts`. Python only (lang 71). Provider-agnostic:
+defaults to the public CE endpoint, overridden by `JUDGE0_API_URL` plus a
+generic auth-header env pair (works with self-hosted, Sulu, or RapidAPI by
+config alone). Visible and hidden cases run as two parallel batch submissions
+with per-case fallback; transient failures retry with backoff. Working
+grounding layer — leave it alone.
 
 ### Persistence
 
 `lib/interview-session-storage.ts` + `useInterviewSessionAutosave` persist the
-full session to localStorage per question; cleared after feedback or Reset. Use
-`usePersistedState` for new persisted UI state.
+full session to localStorage per question (questionId is the session identity);
+cleared after feedback or Reset. `lib/snapshots.ts` captures periodic
+code+transcript snapshots for the feedback evidence. Use `usePersistedState`
+for new persisted UI state.
+
+### Ops layer (Upstash Redis, all fail-open)
+
+Everything here degrades to "off" without Upstash env vars — an outage must
+never block an interview.
+
+- `middleware.ts` — per-IP sliding-window rate limits on the seven public API
+  routes; applied at the middleware layer so the do-not-touch route files stay
+  untouched.
+- `/api/signup` (waitlist capture), `/api/rating` (feedback rating),
+  `/api/stats` (token-gated funnel/rating counters, `lib/stats.ts`).
+- **At-capacity gate** (`lib/byok-mode.ts` + `components/ByokGate.tsx`): flips
+  on automatically on OpenAI `insufficient_quota` or past
+  `BYOK_SESSION_THRESHOLD` starts (or manually via `BYOK_MODE`); new visitors
+  route to `/at-capacity` to bring their own key or join the waitlist instead
+  of spending the server key.
 
 ---
 
@@ -137,16 +187,25 @@ full session to localStorage per question; cleared after feedback or Reset. Use
 - **No `any` types.**
 - **Server-only secrets** — BYOK via `x-provider-key` only; never logged/persisted.
 - **New AI logic** → `lib/interviewer-prompt.ts` or `lib/interviewer-tools.ts`.
-- **Phase transitions** → only `InterviewWorkspace` mutates `phase`, and only for UI.
-- **Hidden test data** → never send `interviewerContext` or hidden cases to the model; redact hidden input/expected in any tool return.
+- **Phase transitions** → only `InterviewWorkspace` mutates `phase`, only for UI, driven by the inline tokens above.
+- **Hidden test data** → never send `interviewerContext` or hidden cases to the model; redact hidden input/expected in any tool return; browsers only ever get `PublicQuestion` (whitelist-built — a new sensitive `Question` field stays server-only unless explicitly added to `toPublicQuestion`).
 - **Streaming** → Vercel AI SDK data stream via the UI message stream.
+- **Session/limit constants** → `lib/interview-limits.ts`; per-round thresholds derive in `lib/round-config.ts` (no per-tier branching).
 
 ---
 
 ## Question bank
 
-`data/questions.json` → `lib/questions.ts` (`getAllQuestions`, `getQuestionById`).
-Each question has `candidateDescription` (shown to candidate) and
-`interviewerContext` (server-only, for grading). Hidden test cases live on the
-question and its follow-ups. The instrumentation is only as good as these — a
-handful of questions with excellent hidden tests + pitfalls beats many shallow ones.
+`data/questions.demo.json` is the bank that ships — it's what `lib/questions.ts`
+imports (`getAllQuestions`, `getQuestionById`). `questions.json` and
+`questions.example.json` in `data/` are not imported. Each question has
+`candidateDescription` (shown to candidate), server-only `interviewerContext`,
+an `entryFunction` Judge0 calls with unpacked test-input args, and hidden test
+cases (with human-readable `description`s — those descriptions are the only
+part the model may see). Follow-up variants may carry their own
+`entryFunction`/`testCases`/`hiddenTestCases`; a variant whose contract differs
+from the baseline's MUST set `entryFunction` and state the exact `def` line in
+its prompt, or grading silently targets the baseline function. Pattern labels
+come from the fixed taxonomy in `docs/question-bank-research.md`. The
+instrumentation is only as good as these — a handful of questions with
+excellent hidden tests + pitfalls beats many shallow ones.

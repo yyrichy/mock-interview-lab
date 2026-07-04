@@ -1,41 +1,69 @@
 # AGENTS.md
 
 Mock Coding — a coding-interview simulator.
-Stack: Next.js · TypeScript · Tailwind · Monaco · Vercel AI SDK 6 · Judge0 · OpenAI (Whisper + TTS).
+Stack: Next.js · TypeScript · Tailwind · Monaco · Vercel AI SDK 6 · Judge0 · OpenAI (transcription + TTS).
 
-This file is the behavioral contract and the source of truth for rules. It is
-runtime-agnostic; `CLAUDE.md` imports it and adds the architecture map plus
-Claude-Code specifics. When the two could drift: rules live here, "where things
-live" lives in `CLAUDE.md`.
+This file is the behavioral contract and the source of truth for rules.
+`CLAUDE.md` imports it and adds the architecture map — *where things live*.
+`PROJECT-NOTES.md` is the long-form design doc; `docs/CHANGES.md` is the
+changelog. When any doc disagrees with source, source wins — and correcting the
+doc is part of whatever job discovered the drift.
 
-## How to work (read this first)
+## Operating mode: whole jobs, one pass
 
-Four checks, before and during every change. They bias toward caution over
-speed — for trivial edits, use judgment.
+Take a request all the way to done in a single run. One job =
 
-**1. Think before coding.** Don't assume. Don't hide confusion. Surface tradeoffs.
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, name them — don't pick one silently.
-- If a simpler approach exists, say so. Push back when warranted.
+1. **Read the actual code first** — every file you're about to change plus the
+   call sites that constrain it. The docs are a map, not the territory.
+2. **Make the change** (judgment defaults below).
+3. **Gate:** `npm run lint` → zero errors. There is no test suite; don't invent
+   one, and don't run `npm run build` — behavior is verified by the human via
+   `npm run dev`.
+4. **Changelog:** add a dated entry at the TOP of `docs/CHANGES.md`, matching
+   the existing entries' shape: what changed per file and why, ending with lint
+   status and a smoke-test checklist.
+5. **Hand back:** summary + smoke-test checklist + review queue. Never
+   `git add` / `commit` / `push` — the user commits.
 
-**2. Simplicity first.** Minimum code that solves the problem. Nothing speculative.
-- No feature, abstraction, config surface, or error-handling for cases nobody asked for.
-- If you wrote 200 lines and it could be 50, rewrite it.
-- "Would a senior engineer call this overcomplicated?" If yes, simplify.
-- Project-specific test: a change earns its place only if it makes an *evidence
+Do not stop mid-job to ask "should I proceed?", present options and wait, or
+deliver half a job with questions attached. When something is unclear, triage
+it:
+
+- **Answerable from the repo** (how X works, whether Y is used, what the local
+  convention is) → read the code. Never ask the user something grep can answer.
+- **A judgment call with a reversible outcome** (naming, placement, which of
+  two reasonable readings, how far a fix should reach) → decide using the
+  judgment defaults, put the decision on the review queue, keep moving.
+- **Stop and ask only when:** the correct-looking fix would break a hard rule
+  below; the action is destructive or hard to reverse (deleting files,
+  rewriting the question bank, anything touching git history); or doing the
+  job as you understand it would silently be a *different* job than the one
+  requested.
+
+## The review queue
+
+End every hand-back with a `**Review queue**` section: each call you made that
+a reviewer might reasonably have made differently — the decision, the
+alternative you rejected, one line on why. Also list what you noticed and
+deliberately did NOT touch: pre-existing dead code, stale doc claims, suspected
+bugs outside the request's scope. An empty queue is a claim that nothing in
+the diff needs a second opinion — make that claim honestly.
+
+Guessing silently and asking constantly are the two failure modes. The queue is
+the third path: the work ships whole, and the doubts ship with it, visibly.
+
+## Judgment defaults
+
+- **Simplicity first.** Minimum code that solves the problem. No speculative
+  features, abstractions, config surfaces, or error handling nobody asked for.
+  If you wrote 200 lines and it could be 50, rewrite before handing back.
+- **Surgical changes.** Touch only what the request requires. Match existing
+  style even where you'd differ. Remove only what *your* change orphaned;
+  pre-existing dead code goes on the review queue, not in the diff.
+- **The project test.** A change earns its place only if it makes an *evidence
   layer* better (execution, hidden tests, timing, voice, snapshots, grounded
-  feedback) or the *conversation* more natural. If it does neither, don't make it.
-
-**3. Surgical changes.** Touch only what the request requires.
-- Don't "improve" adjacent code, comments, or formatting. Match existing style even if you'd do it differently.
-- Remove imports/vars/functions *your* change orphaned; leave pre-existing dead code alone (mention it, don't delete it).
-- Every changed line should trace directly to the request.
-
-**4. Goal-driven execution.** Turn the task into a verifiable goal, then loop until it's met.
-- There is no automated test suite. The gate is `npm run lint` (zero errors) plus a manual run via `npm run dev`.
-- Don't claim done on conversational behavior you can't prove unattended — lint
-  green is the ceiling of an autonomous run; the human verifies the interview by
-  running the app.
+  feedback) or the *conversation* more natural. If it does neither, don't make
+  it — say so in the hand-back instead.
 
 ## Core principle: the model owns the conversation; the app owns the evidence
 
@@ -50,25 +78,36 @@ phase/permission matrix. Give it one strong system prompt plus live state (code,
 tests, transcript, elapsed time) and let it speak. Tools exist ONLY to read
 evidence and run tests.
 
-## Architecture (one paragraph; full map in CLAUDE.md)
-
-One interviewer brain — `POST /api/interviewer` — handles every conversational
-turn. Phase is app metadata that drives the UI only; `InterviewWorkspace` owns
-it and passes it to the model as context. Grounding tools read evidence and run
-tests, nothing more. Final feedback is a separate grounded generation at
-`POST /api/feedback`. Speech and code execution are settled utility layers.
-
 ## Hard rules
 
-- Don't script conversational moments (opening, planningOpener, followUpOpener, forcedWrap, codingEscalationNudge, …). The model generates them from state.
-- Don't gate tools by phase or bring back control-flow tools (`set_phase`, `start_follow_up_variant`, a `TOOL_PERMISSIONS` matrix, `generate_final_feedback` as a flow-driver). These were removed — keep them gone.
-- Don't touch `lib/judge0.ts`, `/api/judge0`, `/api/transcribe`, `/api/tts`. Execution and speech are working layers.
-- Don't send `interviewerContext` or hidden test cases to the model. Redact hidden input/expected before any tool return.
-- Don't reintroduce Web Speech, local Whisper, history summarization, or windowing. Transcription is server-side hosted (OpenAI `gpt-4o-mini-transcribe`); full chat history is sent verbatim every turn.
+- Don't script conversational moments (opening, planning opener, follow-up
+  opener, forced wrap, escalation nudge, …). The model generates them from
+  state.
+- Don't gate tools by phase or bring back control-flow tools (`set_phase`,
+  `start_follow_up_variant`, a `TOOL_PERMISSIONS` matrix,
+  `generate_final_feedback` as a flow-driver). These were removed — keep them
+  gone. Phase advances via inline text tokens the model emits and the client
+  strips (`[->planning]`, `[->coding]`, `[segment-complete]`) — transitions are
+  text, never tools.
+- Don't touch `lib/judge0.ts`, `/api/judge0`, `/api/transcribe`, `/api/tts`.
+  Execution and speech are settled, working layers.
+- Don't send `interviewerContext` or hidden test cases to the model. Redact
+  hidden input/expected before any tool return. Client components only ever
+  receive `PublicQuestion` (whitelist-built in `lib/questions.ts`) — never
+  widen it back toward `Question` across the client boundary.
+- Don't reintroduce Web Speech, local Whisper, history summarization, or
+  windowing. Transcription is server-side hosted (OpenAI
+  `gpt-4o-mini-transcribe`); full chat history is sent verbatim every turn.
 - Don't spawn parallel sub-agents — the steps here are sequentially dependent.
-- Don't run `npm run build` during development. Use `npm run dev`.
-- No `any` types. Server-only secrets; BYOK via `x-provider-key` header, never logged or persisted.
-- Default interviewer model is **OpenAI GPT-5.4 Mini** (hosted demo on the builder's own key — zero BYOK friction for signups). Groq, Gemini, and Anthropic stay selectable via BYOK. Because Groq is a weak structured tool-caller, lean on prompt+state, not tool orchestration: few tools, no control-flow tools, never a silent/tool-only turn, and keep the Groq guards (`noToolInput`, force-text-on-tool-failure).
+- No `any` types. Server-only secrets; BYOK via `x-provider-key` header, never
+  logged or persisted.
+- Default interviewer model is **OpenAI GPT-5.4 Mini** (hosted demo on the
+  builder's own key — zero BYOK friction for signups). Groq, Gemini, and
+  Anthropic stay selectable via BYOK. Because Groq is a weak structured
+  tool-caller, lean on prompt+state, not tool orchestration: few tools, no
+  control-flow tools, never a silent/tool-only turn, and keep the weak-caller
+  guards (`noToolInput`, the force-text-on-failure-streak step guard, the
+  empty-reply fallback stream in `/api/interviewer`).
 
 ## Commands
 
@@ -77,14 +116,16 @@ npm run dev      # start dev server — the only way to run it
 npm run lint     # ESLint — the gate for "done"
 ```
 
-## Stop condition (autonomous runs)
+## Stop condition
 
-Done = code-complete AND `npm run lint` passes with zero errors. Then hand back
-with a summary of what changed and a smoke-test checklist. Do NOT simulate an
-interview to "verify" — the human does that by running the app.
+Done = code-complete AND `npm run lint` passes with zero errors AND
+`docs/CHANGES.md` has the entry. Hand back with the summary, smoke-test
+checklist, and review queue — uncommitted. Do NOT simulate an interview to
+"verify" conversational behavior — the human does that by running the app.
 
 ---
 
-**These rules are working if:** diffs touch only what the request needed, fewer
-rewrites from overcomplication, and clarifying questions come before the work
-rather than after a wrong guess.
+**These rules are working if:** diffs touch only what the request needed, jobs
+land complete in one pass instead of stalling on confirmation, and the review
+queue — not silent guesses, not a chat full of questions — is where the
+uncertainty shows up.
