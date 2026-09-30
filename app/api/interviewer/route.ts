@@ -4,8 +4,8 @@
 // Built on Vercel AI SDK 6 streamText with grounding-only tool calling.
 // Phase is app metadata (the model signals readiness with inline tokens; the
 // client commits). The written scorecard is a separate grounded generation
-// (POST /api/feedback). Default model is OpenRouter Qwen3.8 27B (free); any
-// preset works via BYOK.
+// (POST /api/feedback). Default is OpenRouter North Mini Code (free), with
+// Gemini 3.1 Flash-Lite recovery when the free endpoint fails transiently.
 
 import { randomUUID } from "node:crypto";
 
@@ -20,6 +20,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isInsufficientQuotaError } from "@/lib/ai-errors";
 import {
   DEFAULT_AI_MODEL_PRESET_ID,
+  GEMINI_RECOVERY_MODEL,
   getAiModelConfig,
 } from "@/lib/ai-models";
 import { getByokMode, setByokMode } from "@/lib/byok-mode";
@@ -176,7 +177,7 @@ export async function POST(req: NextRequest) {
       typeof body.modelPresetId === "string"
         ? body.modelPresetId
         : DEFAULT_AI_MODEL_PRESET_ID;
-    const modelConfig = getAiModelConfig(modelPresetId);
+    let modelConfig = getAiModelConfig(modelPresetId);
     if (!modelConfig) {
       await appendLocalDebugEvent({
         type: "interviewer.configuration_error",
@@ -199,18 +200,45 @@ export async function POST(req: NextRequest) {
       ({ apiKey } = resolveProviderKey(modelConfig.provider, byokKey));
     } catch (keyError) {
       if (keyError instanceof MissingProviderKeyError) {
-        await appendLocalDebugEvent({
-          type: "interviewer.configuration_error",
-          requestId: debugRequestId,
-          provider: modelConfig.provider,
-          message: redactDebugMessage(keyError.message),
-        });
-        return NextResponse.json({ error: keyError.message }, { status: 401 });
+        const geminiApiKey = process.env.GEMINI_API_KEY;
+        if (modelConfig.provider === "openrouter" && geminiApiKey) {
+          modelConfig = GEMINI_RECOVERY_MODEL;
+          apiKey = geminiApiKey;
+          void appendLocalDebugEvent({
+            type: "interviewer.provider_fallback",
+            requestId: debugRequestId,
+            fromProvider: "openrouter",
+            fromModel: "cohere/north-mini-code:free",
+            toProvider: "gemini",
+            toModel: GEMINI_RECOVERY_MODEL.model,
+            reason: "missing_openrouter_key",
+          });
+        } else {
+          await appendLocalDebugEvent({
+            type: "interviewer.configuration_error",
+            requestId: debugRequestId,
+            provider: modelConfig.provider,
+            message: redactDebugMessage(keyError.message),
+          });
+          return NextResponse.json({ error: keyError.message }, { status: 401 });
+        }
+      } else {
+        throw keyError;
       }
-      throw keyError;
     }
 
-    const model = getInterviewerLanguageModel(modelConfig, apiKey);
+    const model = getInterviewerLanguageModel(modelConfig, apiKey, (info) => {
+      void appendLocalDebugEvent({
+        type: "interviewer.provider_fallback",
+        requestId: debugRequestId,
+        fromProvider: "openrouter",
+        fromModel: "cohere/north-mini-code:free",
+        toProvider: "gemini",
+        toModel: GEMINI_RECOVERY_MODEL.model,
+        reason: info.reason,
+        statusCode: info.statusCode,
+      });
+    });
 
     await appendLocalDebugEvent({
       type: "interviewer.request",

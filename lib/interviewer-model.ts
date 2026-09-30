@@ -14,11 +14,19 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 
-import type { AiModelConfig } from "@/lib/ai-models";
+import {
+  GEMINI_RECOVERY_MODEL,
+  type AiModelConfig,
+} from "@/lib/ai-models";
+import {
+  type ProviderFallbackInfo,
+  withGeminiRecovery,
+} from "@/lib/openrouter-fallback";
 
 export function getInterviewerLanguageModel(
   config: AiModelConfig,
-  apiKey: string
+  apiKey: string,
+  onRecovery?: (info: ProviderFallbackInfo) => void
 ): LanguageModel {
   switch (config.provider) {
     case "groq":
@@ -28,8 +36,8 @@ export function getInterviewerLanguageModel(
       }).chat(config.model);
     case "openai":
       return createOpenAI({ apiKey }).chat(config.model);
-    case "openrouter":
-      return createOpenAI({
+    case "openrouter": {
+      const primary = createOpenAI({
         baseURL: "https://openrouter.ai/api/v1",
         apiKey,
         headers: {
@@ -37,6 +45,13 @@ export function getInterviewerLanguageModel(
           "X-Title": "Mock Coding",
         },
       }).chat(config.model);
+      const recoveryKey = process.env.GEMINI_API_KEY;
+      if (!recoveryKey) return primary;
+      const recovery = createGoogleGenerativeAI({ apiKey: recoveryKey })(
+        GEMINI_RECOVERY_MODEL.model
+      );
+      return withGeminiRecovery(primary, recovery, onRecovery);
+    }
     case "anthropic":
       return createAnthropic({ apiKey })(config.model);
     case "gemini":

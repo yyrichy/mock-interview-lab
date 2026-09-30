@@ -10,8 +10,12 @@
 
 import type { ChatMessage } from "@/lib/chat";
 import type { CodingVoiceReport } from "@/lib/coding-voice-report";
-import type { AiModelConfig } from "@/lib/ai-models";
+import { GEMINI_RECOVERY_MODEL, type AiModelConfig } from "@/lib/ai-models";
 import type { ProviderMessage } from "@/lib/providers/types";
+import {
+  getOpenRouterFallbackInfo,
+  type ProviderFallbackInfo,
+} from "@/lib/openrouter-fallback";
 import * as geminiProvider from "@/lib/providers/gemini";
 import * as groqProvider from "@/lib/providers/groq";
 import * as anthropicProvider from "@/lib/providers/anthropic";
@@ -100,32 +104,61 @@ async function* streamFromProvider(
   modelConfig: AiModelConfig,
   system: string,
   messages: ProviderMessage[],
-  apiKey?: string
+  apiKey?: string,
+  onRecovery?: (info: ProviderFallbackInfo) => void
 ): AsyncGenerator<string> {
   const opts = { system, messages, model: modelConfig.model, apiKey };
-  switch (modelConfig.provider) {
-    case "groq":
-      yield* groqProvider.streamChat(opts);
-      break;
-    case "gemini":
-      yield* geminiProvider.streamChat(opts);
-      break;
-    case "anthropic":
-      yield* anthropicProvider.streamChat(opts);
-      break;
-    case "openai":
-      yield* openaiProvider.streamChat(opts);
-      break;
-    case "openrouter":
-      yield* openaiProvider.streamChat({
-        ...opts,
-        baseURL: "https://openrouter.ai/api/v1",
-      });
-      break;
-    default: {
-      const _exhaustive: never = modelConfig.provider;
-      throw new Error(`Unknown provider: ${String(_exhaustive)}`);
+  const primary = async function* (): AsyncGenerator<string> {
+    switch (modelConfig.provider) {
+      case "groq":
+        yield* groqProvider.streamChat(opts);
+        break;
+      case "gemini":
+        yield* geminiProvider.streamChat(opts);
+        break;
+      case "anthropic":
+        yield* anthropicProvider.streamChat(opts);
+        break;
+      case "openai":
+        yield* openaiProvider.streamChat(opts);
+        break;
+      case "openrouter":
+        yield* openaiProvider.streamChat({
+          ...opts,
+          baseURL: "https://openrouter.ai/api/v1",
+        });
+        break;
+      default: {
+        const _exhaustive: never = modelConfig.provider;
+        throw new Error(`Unknown provider: ${String(_exhaustive)}`);
+      }
     }
+  };
+
+  let emittedText = false;
+  try {
+    for await (const chunk of primary()) {
+      emittedText = true;
+      yield chunk;
+    }
+  } catch (error) {
+    const recoveryInfo = getOpenRouterFallbackInfo(error);
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (
+      modelConfig.provider !== "openrouter" ||
+      emittedText ||
+      !recoveryInfo ||
+      !geminiApiKey
+    ) {
+      throw error;
+    }
+    onRecovery?.(recoveryInfo);
+    yield* geminiProvider.streamChat({
+      system,
+      messages,
+      model: GEMINI_RECOVERY_MODEL.model,
+      apiKey: geminiApiKey,
+    });
   }
 }
 
@@ -216,7 +249,8 @@ export async function* streamFeedback(
   level: InterviewLevel | null = null,
   codingVoiceReport: CodingVoiceReport | null = null,
   followUpVariants: FeedbackFollowUpVariant[] | null = null,
-  apiKey?: string
+  apiKey?: string,
+  onRecovery?: (info: ProviderFallbackInfo) => void
 ): AsyncGenerator<string> {
   const transcriptSection =
     fullTranscript.trim().length > 0
@@ -261,6 +295,7 @@ ${formatChatHistoryForFeedback(chatHistory)}${traceSection}${paceReport != null 
     modelConfig,
     FEEDBACK_SYSTEM_PROMPT + levelCalibration + styleCalibration,
     [{ role: "user", content: userPrompt }],
-    apiKey
+    apiKey,
+    onRecovery
   );
 }

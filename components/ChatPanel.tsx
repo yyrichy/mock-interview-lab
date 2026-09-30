@@ -21,7 +21,6 @@ const ALEX_VOICE_STORAGE_KEY = "mock-coding:alexVoice";
 type Props = {
   messages: ChatMessage[];
   modelPresetId: AiModelPresetId;
-  onModelPresetIdChange: (id: AiModelPresetId) => void;
   padRealism: boolean;
   onPadRealismChange: (v: boolean) => void;
   humanLatency: boolean;
@@ -71,7 +70,6 @@ type Props = {
 export function ChatPanel({
   messages,
   modelPresetId,
-  onModelPresetIdChange,
   padRealism,
   onPadRealismChange,
   humanLatency,
@@ -373,29 +371,19 @@ export function ChatPanel({
             </button>
           </div>
 
-          {/* Row 3: advanced settings — model picker + dev toggles, collapsed by default */}
+          {/* Row 3: advanced settings — active interviewer path + dev toggles */}
           {advancedOpen && (
             <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
-              <label className="flex shrink-0 flex-col gap-0.5">
+              <div className="flex shrink-0 flex-col gap-0.5">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
                   Interviewer
                 </span>
-                <select
-                  value={modelPresetId}
-                  onChange={(e) =>
-                    onModelPresetIdChange(e.target.value as AiModelPresetId)
-                  }
-                  disabled={inputDisabled}
-                  className="max-w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                  aria-label="Interviewer AI model"
-                >
-                  {AI_MODEL_OPTIONS.map((opt) => (
-                    <option key={opt.id} value={opt.id}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                <span className="text-xs text-zinc-300">
+                  {AI_MODEL_OPTIONS.find((option) => option.id === modelPresetId)
+                    ?.label ?? AI_MODEL_OPTIONS[0]?.label}
+                  {" · Gemini Flash-Lite recovery"}
+                </span>
+              </div>
               <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
                 <input
                   type="checkbox"

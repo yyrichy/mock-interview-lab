@@ -26,7 +26,6 @@ import type {
 import {
   AI_MODEL_PRESET_STORAGE_KEY,
   DEFAULT_AI_MODEL_PRESET_ID,
-  isAiModelPresetId,
   type AiModelPresetId,
 } from "@/lib/ai-models";
 import type {
@@ -294,10 +293,10 @@ export function InterviewWorkspace({ question }: Props) {
   const sliceAwaitingCandidateReplyRef = useRef(false);
   const sliceForceWrapUpRef = useRef(false);
   const [sliceGraceReply, setSliceGraceReply] = useState(false);
-  const [modelPresetId, setModelPresetId] = usePersistedState<AiModelPresetId>(
+  const [modelPresetId] = usePersistedState<AiModelPresetId>(
     AI_MODEL_PRESET_STORAGE_KEY,
     DEFAULT_AI_MODEL_PRESET_ID,
-    (raw) => (isAiModelPresetId(raw) ? raw : null)
+    (raw) => (raw === DEFAULT_AI_MODEL_PRESET_ID ? raw : null)
   );
   const modelPresetIdRef = useRef(modelPresetId);
   const sessionPhaseRef = useRef<SessionPhase>(sessionPhase);
@@ -2769,7 +2768,6 @@ export function InterviewWorkspace({ question }: Props) {
             <ChatPanel
               messages={messages}
               modelPresetId={modelPresetId}
-              onModelPresetIdChange={setModelPresetId}
               padRealism={padRealism}
               onPadRealismChange={setPadRealism}
               humanLatency={humanLatency}

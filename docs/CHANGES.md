@@ -1,5 +1,28 @@
 # Changes
 
+## 2026-09-30 — Add North Mini primary with Gemini recovery
+
+- `lib/ai-models.ts`: replace Qwen with OpenRouter `cohere/north-mini-code:free`
+  and fix recovery to `gemini-3.1-flash-lite`.
+- `lib/openrouter-fallback.ts` and `lib/interviewer-model.ts`: retry transient
+  OpenRouter failures on Gemini before any text/tool output has been sent.
+- `lib/feedback.ts`, `/api/interviewer`, and `/api/feedback`: apply the same
+  no-duplicate-output recovery behavior to interviewer turns and final feedback;
+  log which provider/model recovered the request without logging credentials.
+- Hide other provider choices in the interview UI while leaving their adapters
+  in the code. Ignore older saved model choices so this user's existing browser
+  starts on the North → Gemini path.
+- Updated `.env.example`, README, CLAUDE, AGENTS, and project notes to describe
+  both required keys and the fixed Gemini fallback model.
+- Verification: `npm run lint`, `tsc --noEmit`, mock browser e2e, and both
+  simulated 429/no-replay fallback checks passed. A live North/Whisper/TTS
+  conversation passed; the Gemini key also answered `OK` using the exact
+  `gemini-3.1-flash-lite` model. The full app did not hit a live North failure
+  during that run, so Gemini recovery was simulated at the model middleware.
+- Smoke checklist: start a fresh interview with both keys configured; verify it
+  starts on North and still opens/responds if the OpenRouter free model returns
+  a transient failure.
+
 ## 2026-09-30 — Make Qwen the default interviewer model
 
 - `lib/ai-models.ts`: use OpenRouter Qwen3.8 27B (free) as the default model

@@ -6,15 +6,15 @@ import { expect, test } from "@playwright/test";
 const speechClip = readFileSync(
   path.join(process.cwd(), "e2e/fixtures/candidate-clarification.mp3")
 ).toString("base64");
-const modelPresetId = "openrouter-qwen3.8-27b-free";
+const modelPresetId = "openrouter-north-mini-code-free";
 
 test("real interviewer holds a voice conversation through two turns", async ({
   page,
 }) => {
   test.setTimeout(180_000);
   test.skip(
-    !process.env.OPENROUTER_API_KEY,
-    "Set OPENROUTER_API_KEY in .env.local to run the live conversation test"
+    !process.env.OPENROUTER_API_KEY || !process.env.GEMINI_API_KEY,
+    "Set OPENROUTER_API_KEY and GEMINI_API_KEY in .env.local to run the live fallback test"
   );
 
   const interviewerRequests: Array<{
@@ -43,7 +43,7 @@ test("real interviewer holds a voice conversation through two turns", async ({
         source.buffer = audioBuffer;
         source.connect(destination);
         await audioContext.resume();
-        source.start();
+        source.start(audioContext.currentTime + 0.25);
         return destination.stream;
       },
     });
@@ -111,6 +111,7 @@ test("real interviewer holds a voice conversation through two turns", async ({
   expect(sttResponse.status()).toBe(200);
   const transcription = (await sttResponse.json()) as { text?: string };
   const candidateTurn = transcription.text?.trim() ?? "";
+  console.log(`Whisper heard: ${candidateTurn}`);
   expect(candidateTurn.toLowerCase()).toContain("duplicate");
   expect(candidateTurn.toLowerCase()).toContain("values");
 
@@ -135,6 +136,5 @@ test("real interviewer holds a voice conversation through two turns", async ({
   ).toBe(true);
 
   const followUp = await messages.nth(2).innerText();
-  console.log(`Whisper heard: ${candidateTurn}`);
   console.log(`Live interviewer reply: ${followUp.replace(/\s*Speak\s*$/, "")}`);
 });

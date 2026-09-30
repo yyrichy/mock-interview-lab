@@ -24,9 +24,10 @@ npm run test:e2e:live    # opt-in live interview using OpenRouter
 The default e2e suite exercises push-to-talk with generated audio and mocked AI
 APIs. `test:e2e:whisper` uses generated speech with the configured real Whisper
 endpoint and mocks only the interviewer. Live model quality and real microphone
-behavior still require a manual `npm run dev` session. `test:e2e:live` selects
-Qwen through the app UI, then sends generated speech through real Whisper and
-the live interviewer, with Alex voice enabled so the real TTS endpoint runs.
+behavior still require a manual `npm run dev` session. `test:e2e:live` uses
+North Mini Code with Gemini 3.1 Flash-Lite recovery, then sends generated
+speech through real Whisper and the live interviewer, with Alex voice enabled
+so the real TTS endpoint runs.
 
 ---
 
@@ -140,7 +141,8 @@ summarization or history windowing.
 
 Uniform adapters under `lib/providers/*` (OpenAI, Groq, Gemini, Anthropic,
 OpenRouter-compatible chat completions). Presets in `lib/ai-models.ts` (add
-models there only); default is `openrouter-qwen3.8-27b-free`. BYOK via
+models there only); default is `openrouter-north-mini-code-free`, with automatic
+Gemini 3.1 Flash-Lite recovery. BYOK via
 `components/ByokDrawer.tsx` → localStorage →
 `x-provider-key` header; server (`lib/resolve-provider-key.ts`) prefers header
 over env, never logs/persists.

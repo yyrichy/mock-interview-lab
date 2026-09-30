@@ -133,7 +133,7 @@ test("push-to-talk uploads captured audio and sends the mocked transcript", asyn
   expect(uploadedAudioSizes).toHaveLength(2);
   expect(interviewerRequests).toHaveLength(3);
   expect(interviewerRequests[0]?.modelPresetId).toBe(
-    "openrouter-qwen3.8-27b-free"
+    "openrouter-north-mini-code-free"
   );
   expect(
     interviewerRequests[1]?.messages?.some((message) =>

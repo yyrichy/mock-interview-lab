@@ -102,9 +102,11 @@ evidence and run tests.
 - Don't spawn parallel sub-agents — the steps here are sequentially dependent.
 - No `any` types. Server-only secrets; BYOK via `x-provider-key` header, never
   logged or persisted.
-- Default interviewer model is **OpenRouter Qwen3.8 27B (free)**. OpenAI GPT-5.4
-  Mini, Groq, Gemini, and Anthropic stay selectable via BYOK. Because Groq is a weak structured
-  tool-caller, lean on prompt+state, not tool orchestration: few tools, no
+- Default interviewer is **Cohere North Mini Code (free) via OpenRouter**, with
+  **Gemini 3.1 Flash-Lite** as automatic transient-failure recovery. OpenAI,
+  Groq, and Anthropic adapters remain in code but are not active interview paths.
+  Because Groq is a weak structured tool-caller, lean on prompt+state, not tool
+  orchestration: few tools, no
   control-flow tools, never a silent/tool-only turn, and keep the weak-caller
   guards (`noToolInput`, the force-text-on-failure-streak step guard, the
   empty-reply fallback stream in `/api/interviewer`).
@@ -116,7 +118,7 @@ npm run dev      # start dev server — the only way to run it
 npm run lint     # ESLint — the gate for "done"
 npm run test:e2e        # browser flow with mocked AI/speech APIs
 npm run test:e2e:whisper # opt-in real Whisper check; uses OPENROUTER_API_KEY
-npm run test:e2e:live    # opt-in real Qwen + Whisper + TTS interview flow
+npm run test:e2e:live    # opt-in North + Gemini recovery + Whisper + TTS flow
 ```
 
 ## Stop condition

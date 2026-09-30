@@ -7,7 +7,11 @@
 import { randomUUID } from "node:crypto";
 
 import { isInsufficientQuotaError, toClientAiFailure } from "@/lib/ai-errors";
-import { type AiModelConfig, getAiModelConfig } from "@/lib/ai-models";
+import {
+  GEMINI_RECOVERY_MODEL,
+  type AiModelConfig,
+  getAiModelConfig,
+} from "@/lib/ai-models";
 import { setByokMode } from "@/lib/byok-mode";
 import type { ChatMessage } from "@/lib/chat";
 import type { CodingVoiceReport } from "@/lib/coding-voice-report";
@@ -24,6 +28,7 @@ import {
   redactDebugMessage,
 } from "@/lib/local-debug-archive";
 import { incrementStat } from "@/lib/stats";
+import type { ProviderFallbackInfo } from "@/lib/openrouter-fallback";
 
 export const runtime = "nodejs";
 
@@ -232,7 +237,19 @@ export async function POST(req: Request) {
     isInterviewLevel(body.level) ? body.level : null,
     parseCodingVoiceReport(body.codingVoiceReport),
     parseFollowUpVariants(body.followUpVariants),
-    requestApiKey
+    requestApiKey,
+    (info: ProviderFallbackInfo) => {
+      void appendLocalDebugEvent({
+        type: "feedback.provider_fallback",
+        requestId: debugRequestId,
+        fromProvider: "openrouter",
+        fromModel: "cohere/north-mini-code:free",
+        toProvider: "gemini",
+        toModel: GEMINI_RECOVERY_MODEL.model,
+        reason: info.reason,
+        statusCode: info.statusCode,
+      });
+    }
   );
 
   let first: IteratorResult<string>;

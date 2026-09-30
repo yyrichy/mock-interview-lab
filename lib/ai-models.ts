@@ -14,19 +14,20 @@ export const AI_MODEL_PRESETS = {
     provider: "groq" as const,
     model: "llama-3.3-70b-versatile",
   },
-  "gemini-2.5-flash": {
-    provider: "gemini" as const,
-    model: "gemini-2.5-flash",
-  },
   "anthropic-claude-sonnet-4-6": {
     provider: "anthropic" as const,
     model: "claude-sonnet-4-6",
   },
-  "openrouter-qwen3.8-27b-free": {
+  "openrouter-north-mini-code-free": {
     provider: "openrouter" as const,
-    model: "qwen/qwen3.8-27b:free",
+    model: "cohere/north-mini-code:free",
   },
 } as const satisfies Record<string, AiModelConfig>;
+
+export const GEMINI_RECOVERY_MODEL: AiModelConfig = {
+  provider: "gemini",
+  model: "gemini-3.1-flash-lite",
+};
 
 export type AiModelPresetId = keyof typeof AI_MODEL_PRESETS;
 
@@ -34,17 +35,16 @@ export const AI_MODEL_OPTIONS: ReadonlyArray<{
   id: AiModelPresetId;
   label: string;
 }> = [
-  { id: "openai-gpt-5.4-mini", label: "OpenAI GPT-5.4 Mini" },
-  { id: "groq-llama-3.3-70b", label: "Groq Llama 3.3 70B" },
-  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { id: "anthropic-claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { id: "openrouter-qwen3.8-27b-free", label: "Qwen3.8 27B (free; avoid sensitive data)" },
+  {
+    id: "openrouter-north-mini-code-free",
+    label: "Cohere North Mini Code (free)",
+  },
 ];
 
-// Default to the OpenRouter Qwen preset used by the local interview setup.
-// Self-hosters need OPENROUTER_API_KEY (or a key in the API Keys drawer).
+// North Mini Code is primary; Gemini 3.1 Flash-Lite is an automatic recovery
+// model when the OpenRouter free endpoint is unavailable.
 export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId =
-  "openrouter-qwen3.8-27b-free";
+  "openrouter-north-mini-code-free";
 
 /** localStorage key for the interview model picker (survives refresh). */
 export const AI_MODEL_PRESET_STORAGE_KEY = "mock-coding:modelPresetId";
