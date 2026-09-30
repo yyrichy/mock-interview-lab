@@ -46,13 +46,13 @@ A normal chat is already good at running a flexible clarify → approach → cod
 | Framework | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
 | Editor | Monaco (`@monaco-editor/react`) |
 | AI orchestration | Vercel AI SDK 6 (`streamText` + tool calling) |
-| Interviewer / feedback models | OpenAI GPT-5.4 Mini (default); Groq Llama 3.3 70B, Gemini 2.5 Flash, Claude Sonnet 4.6 selectable in the chat panel (persisted to localStorage) |
-| Voice in | OpenAI `gpt-4o-mini-transcribe` via `/api/transcribe` — ambient 30s chunks during coding + push-to-talk mic |
-| Voice out | OpenAI `gpt-4o-mini-tts` (default) or ElevenLabs |
+| Interviewer / feedback models | OpenAI GPT-5.4 Mini (default); Groq Llama 3.3 70B, Gemini 2.5 Flash, Claude Sonnet 4.6, and OpenRouter Qwen3.8 27B (free) selectable in the chat panel (persisted to localStorage) |
+| Voice in | OpenAI `gpt-4o-mini-transcribe` by default or OpenRouter Whisper Large V3 Turbo when using an OpenRouter key — ambient 30s chunks during coding + push-to-talk mic |
+| Voice out | OpenAI `gpt-4o-mini-tts` by default, ElevenLabs, or free OpenRouter Deepgram Flux TTS |
 | Code execution | Judge0 — Python 3 only; public CE endpoint by default, override via `JUDGE0_API_URL` |
 | Limits / analytics | Upstash Redis — rate limiting, signup capture, funnel/rating stats, BYOK "at capacity" gate (all optional, fail-open) |
 | Question bank | `data/questions.demo.json` (local, gitignored) |
-| Persistence | localStorage — full session (chat, code, transcript, timers, run state) autosaved per question, restored on refresh, cleared after feedback or reset |
+| Persistence | localStorage — full session restored on refresh; during local development, snapshots are also saved under `local-debug/interviews/` and interviewer diagnostics append to `local-debug/debug.jsonl` |
 
 ---
 
@@ -76,10 +76,11 @@ every `hiddenTestCases` array are server-only grading data that never reach the
 browser or get read aloud. A handful of questions with sharp hidden tests beats
 many shallow ones.
 
-The default setup runs entirely on **OpenAI** — it powers the interviewer, feedback, transcription, and (by default) TTS — so `OPENAI_API_KEY` is the only key you need to get started. Everything else is optional:
+The default setup runs on **OpenAI**. To use the no-cost interviewer, configure an OpenRouter key and choose **Qwen3.8 27B (free)** in the Model menu. The free endpoint is hosted by third-party providers, and its data handling may vary; avoid sending sensitive or confidential information. OpenRouter currently reports a lower median latency for Qwen3.8 27B than Laguna S 2.1, though free model availability and response time can change. OpenRouter speech uses Whisper at $0.000003 per second (about $0.011 per hour) and free Flux TTS. Everything else is optional:
 
 ```
 OPENAI_API_KEY=...        # required for the default setup
+OPENROUTER_API_KEY=...    # optional; Qwen interviewer + Whisper STT + Flux TTS
 NEXT_PUBLIC_SITE_URL=...  # optional; canonical URL for OG tags (defaults to the mockcoding.dev)
 GEMINI_API_KEY=...        # optional alternate interviewer model
 GROQ_API_KEY=...          # optional alternate interviewer model
@@ -93,6 +94,16 @@ ELEVENLABS_API_KEY=...    # optional alternate TTS engine
 See `.env.example` for the full set (TTS engine selection, Judge0 auth headers incl. RapidAPI, the at-capacity override, and the stats token). Keys in `.env.local` are read server-side only by the API routes — never sent to the browser, logged, or persisted.
 
 **BYOK.** The **API Keys** button in the chat panel opens a drawer where you paste per-provider keys. They're stored only in your browser's localStorage and forwarded to the server per request via the `x-provider-key` header (server prefers the header over env, and never logs or persists it). This lets you run without setting any env vars.
+
+**Local debug archive.** When running `npm run dev`, full interview snapshots
+are written to `local-debug/interviews/<questionId>-<startedAt>.json` (one file
+per attempt, updated as the session changes). Interviewer and feedback request
+metadata, tool/step diagnostics, generation timings, and errors append to
+`local-debug/debug.jsonl`. The folder is git-ignored and is not written in
+production. Interview snapshots include your chat, code, transcript, test
+results, final feedback, and timing; treat them as private and delete
+`local-debug/` when you no longer need them. The debug log records error
+messages after API-key redaction but does not copy raw chat or transcript text.
 
 ---
 
@@ -108,8 +119,9 @@ app/
     interviewer/route.ts        the single interviewer brain — every conversational turn
     feedback/route.ts             final grounded scorecard generation
     judge0/route.ts               Judge0 code-execution proxy
-    transcribe/route.ts           OpenAI transcription proxy
-    tts/route.ts                  text-to-speech proxy (OpenAI default / ElevenLabs)
+    transcribe/route.ts           OpenAI / OpenRouter transcription proxy
+    tts/route.ts                  TTS proxy (OpenAI / OpenRouter / ElevenLabs)
+    local-debug/session          development-only local session archive
     rating, signup, stats         funnel + analytics endpoints (Upstash-backed)
 
 components/
@@ -132,6 +144,7 @@ lib/
   byok.ts, byok-mode.ts         BYOK storage + at-capacity mode
   judge0.ts                     code execution (batched submissions)
   speech.ts, groq-ambient.ts, coding-voice-report.ts    transcription helpers, ambient loop, think-aloud summary
+  local-debug-archive.ts        git-ignored development snapshots + JSONL diagnostics
   session-state.ts, phase-config.ts, chat.ts            session types + phase budgets
   round-config.ts, interview-limits.ts, follow-up-config.ts,
   coding-escalation.ts, planning-coding-invite.ts       pacing, limits, follow-up + phase-transition helpers
@@ -160,5 +173,7 @@ public/
 
 ## Notes
 
-- **No automated test suite.** `npm run lint` is the gate; verify the interview loop by running it end-to-end with `npm run dev`.
+- **Mock voice e2e:** install Chromium once with `npx playwright install chromium`, then run `npm run test:e2e`. This supplies a generated tone as microphone input and mocks transcription and interviewer responses, so it makes no provider calls.
+- **Real Whisper integration:** run `npm run test:e2e:whisper` with `OPENROUTER_API_KEY` in `.env.local`. It plays a short generated speech clip into the mock microphone and sends the resulting recording through the real OpenRouter Whisper endpoint; the interviewer stays mocked. It reports word error rate against the clip's known phrase and uses a small amount of API usage. The clip is synthesized speech, so it does not measure recognition of your own voice or room noise.
+- **Live interview e2e:** run `npm run test:e2e:live` with `OPENROUTER_API_KEY` in `.env.local`. It selects Qwen in the app's model picker, starts a fresh interview, waits for a live interviewer opening and TTS response, then pushes a generated spoken clarification through the real Whisper endpoint and verifies the real interviewer responds using that transcript. It makes real provider calls (Qwen free endpoint, Whisper metered endpoint, Flux TTS free endpoint). The speech is synthetic and the test cannot assess your own mic/audio quality. Free model latency and availability vary.
 - **Python only.** Judge0 runs the candidate's Python (language 71) against visible and hidden cases; hidden inputs/expected values never reach the browser or the model.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCodingShortcuts } from "@/lib/hooks/useCodingShortcuts";
 import { useInterviewSessionAutosave } from "@/lib/hooks/useInterviewSessionAutosave";
@@ -40,6 +40,7 @@ import {
   savePersistedInterviewSession,
   type PersistedInterviewSession,
 } from "@/lib/interview-session-storage";
+import { saveLocalDebugSnapshot } from "@/lib/local-debug-client";
 import {
   getSampledFeedbackSnapshots,
   getSnapshots,
@@ -201,6 +202,7 @@ export function InterviewWorkspace({ question }: Props) {
     savedAt: Date.now(),
     sessionPhase: "clarifying",
     messages: [],
+    feedbackText: "",
     code: questionToEditorInitialValue(question),
     transcript: [],
     roundStartTime: null,
@@ -314,6 +316,7 @@ export function InterviewWorkspace({ question }: Props) {
   // (handleAgentDataEvent) can append error events to the currently-streaming
   // assistant bubble across all migrated call sites.
   const currentAgentAssistantIdRef = useRef<string | null>(null);
+  const localArchiveTimerRef = useRef<number | null>(null);
   const [padRealism, setPadRealism] = usePersistedState<boolean>(
     "mock-coding:padRealism",
     false,
@@ -326,6 +329,22 @@ export function InterviewWorkspace({ question }: Props) {
     (raw) => (raw === "true" ? true : raw === "false" ? false : null),
     (v) => (v ? "true" : "false")
   );
+
+  const scheduleLocalArchiveSnapshot = useCallback(() => {
+    if (
+      process.env.NODE_ENV !== "development" ||
+      !sessionPersistenceActive
+    ) {
+      return;
+    }
+    if (localArchiveTimerRef.current !== null) {
+      window.clearTimeout(localArchiveTimerRef.current);
+    }
+    localArchiveTimerRef.current = window.setTimeout(() => {
+      localArchiveTimerRef.current = null;
+      saveLocalDebugSnapshot(collectSessionRef.current());
+    }, 1200);
+  }, [sessionPersistenceActive]);
   // Set once the candidate's baseline passes both visible and hidden on a Submit.
   // Drives whether banked variants are introduced. Ref-only (no render reads it).
   const baselineSolvedAtRef = useRef<number | null>(null);
@@ -421,6 +440,7 @@ export function InterviewWorkspace({ question }: Props) {
     if (saved) {
       restoredSessionRef.current = true;
       setMessages(saved.messages);
+      setFeedbackText(saved.feedbackText);
       setSessionPhase(saved.sessionPhase);
       setTranscript(saved.transcript);
       transcriptRef.current = saved.transcript;
@@ -501,6 +521,7 @@ export function InterviewWorkspace({ question }: Props) {
       savedAt: Date.now(),
       sessionPhase: sessionPhaseRef.current,
       messages,
+      feedbackText,
       code: codeRef.current,
       transcript: transcriptRef.current,
       roundStartTime: roundStartTimeRef.current,
@@ -539,11 +560,14 @@ export function InterviewWorkspace({ question }: Props) {
     } catch {
       /* ignore */
     }
+    scheduleLocalArchiveSnapshot();
   }, [
     sessionBoot,
     sessionPersistenceActive,
     sessionPhase,
     messages,
+    feedbackText,
+    transcript,
     roundStartTime,
     codingStartedAt,
     testResults,
@@ -556,6 +580,7 @@ export function InterviewWorkspace({ question }: Props) {
     forcedWrap,
     topicsProbed,
     question.id,
+    scheduleLocalArchiveSnapshot,
   ]);
 
   useEffect(() => {
@@ -2259,6 +2284,7 @@ export function InterviewWorkspace({ question }: Props) {
     }
     markStreamStart(feedbackId);
 
+    let generatedFeedback = "";
     try {
       for await (const chunk of streamFeedbackApi({
         modelPresetId: modelPresetIdRef.current,
@@ -2280,14 +2306,23 @@ export function InterviewWorkspace({ question }: Props) {
             ...(f.entryFunction ? { entryFunction: f.entryFunction } : {}),
           })),
       }, streamAbortRef.current?.signal)) {
-        setFeedbackText((prev) => prev + chunk);
+        generatedFeedback += chunk;
+        setFeedbackText(generatedFeedback);
       }
     } catch (e) {
       const errText = e instanceof Error ? e.message : String(e);
-      setFeedbackText((prev) =>
-        prev ? `${prev}\n\n[Error: ${errText}]` : `[Error: ${errText}]`
-      );
+      generatedFeedback = generatedFeedback
+        ? `${generatedFeedback}\n\n[Error: ${errText}]`
+        : `[Error: ${errText}]`;
+      setFeedbackText(generatedFeedback);
     } finally {
+      saveLocalDebugSnapshot({
+        ...collectSessionRef.current(),
+        savedAt: Date.now(),
+        sessionPhase: "feedback",
+        phaseStartTime: tNow,
+        feedbackText: generatedFeedback,
+      });
       setIsStreaming(false);
       clearStreamingId(feedbackId);
       setSessionPersistenceActive(false);
@@ -2650,6 +2685,7 @@ export function InterviewWorkspace({ question }: Props) {
                 padRealism={padRealism && showEditorTools}
                 onChange={(value) => {
                   codeRef.current = value;
+                  scheduleLocalArchiveSnapshot();
                 }}
               />
             {showEditorTools && (

@@ -1,9 +1,11 @@
 import OpenAI from "openai";
 import type { StreamChatOptions, ProviderMessage } from "./types";
 
-function getApiKey(override?: string): string {
-  const key = override ?? process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("OPENAI_API_KEY is not set");
+function getApiKey(override?: string, baseURL?: string): string {
+  const isOpenRouter = baseURL?.startsWith("https://openrouter.ai/") ?? false;
+  const envVar = isOpenRouter ? "OPENROUTER_API_KEY" : "OPENAI_API_KEY";
+  const key = override ?? process.env[envVar];
+  if (!key) throw new Error(`${envVar} is not set`);
   return key;
 }
 
@@ -32,7 +34,10 @@ function toOpenAIMessages(
 export async function* streamChat(
   options: StreamChatOptions
 ): AsyncGenerator<string> {
-  const client = new OpenAI({ apiKey: getApiKey(options.apiKey) });
+  const client = new OpenAI({
+    apiKey: getApiKey(options.apiKey, options.baseURL),
+    ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+  });
 
   const stream = await client.chat.completions.create({
     model: options.model,

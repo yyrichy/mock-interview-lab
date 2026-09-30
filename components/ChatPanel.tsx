@@ -713,7 +713,9 @@ export function ChatPanel({
                 type="button"
                 disabled={chatLocked}
                 aria-label={
-                  sessionPhase === "coding"
+                  ttsStatus === "playing" || ttsStatus === "loading"
+                    ? "Hold to stop Alex speaking and dictate a message"
+                    : sessionPhase === "coding"
                     ? "Hold for voice question (pauses ambient listening)"
                     : "Hold to dictate a message"
                 }
@@ -726,6 +728,9 @@ export function ChatPanel({
                 onPointerDown={(e) => {
                   if (chatLocked) return;
                   e.preventDefault();
+                  // A deliberate push-to-talk press gives the candidate the
+                  // floor immediately instead of making them talk over Alex.
+                  stopAlexVoice();
                   setMicHeld(true);
                   try {
                     e.currentTarget.setPointerCapture(e.pointerId);

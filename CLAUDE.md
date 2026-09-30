@@ -16,9 +16,17 @@ in the same job.
 ```bash
 npm run dev      # start dev server — always this, never npm run build
 npm run lint     # ESLint — the gate for "done"
+npm run test:e2e        # browser test using mocked audio + AI endpoints
+npm run test:e2e:whisper # opt-in integration against real Whisper
+npm run test:e2e:live    # opt-in live interview using OpenRouter
 ```
 
-No test suite. Behavior is validated end-to-end with `npm run dev` (by the human).
+The default e2e suite exercises push-to-talk with generated audio and mocked AI
+APIs. `test:e2e:whisper` uses generated speech with the configured real Whisper
+endpoint and mocks only the interviewer. Live model quality and real microphone
+behavior still require a manual `npm run dev` session. `test:e2e:live` selects
+Qwen through the app UI, then sends generated speech through real Whisper and
+the live interviewer, with Alex voice enabled so the real TTS endpoint runs.
 
 ---
 
@@ -130,22 +138,34 @@ summarization or history windowing.
 
 ### AI providers
 
-Uniform adapters under `lib/providers/*` (OpenAI, Groq, Gemini, Anthropic).
-Presets in `lib/ai-models.ts` (add models there only); default is
+Uniform adapters under `lib/providers/*` (OpenAI, Groq, Gemini, Anthropic,
+OpenRouter-compatible chat completions). Presets in `lib/ai-models.ts` (add
+models there only); default is
 `openai-gpt-5.4-mini`. BYOK via `components/ByokDrawer.tsx` → localStorage →
 `x-provider-key` header; server (`lib/resolve-provider-key.ts`) prefers header
 over env, never logs/persists.
 
-### Speech — OpenAI (transcription + TTS)
+### Speech — OpenAI or OpenRouter (transcription + TTS)
 
 Ambient (coding phase): `lib/groq-ambient.ts` + `useGroqAmbient` → ~30s chunks
 → `POST /api/transcribe`. Focused mic: `useFocusMicRecorder` → single blob →
-same route. Transcription proxies OpenAI `gpt-4o-mini-transcribe` on
-`OPENAI_API_KEY` (or a prefix-validated BYOK OpenAI key) — the `groq-*`
-file/hook names are historical; there is no Groq in the speech path. TTS
-(`/api/tts`): one contract (text in, `audio/mpeg` out), OpenAI
-`gpt-4o-mini-tts` by default, ElevenLabs when its key is set or
-`TTS_PROVIDER=elevenlabs`.
+same route. Transcription uses OpenRouter Whisper when a prefix-validated BYOK
+OpenRouter key is sent, otherwise OpenAI `gpt-4o-mini-transcribe`. TTS similarly
+selects OpenRouter Deepgram Flux (free) with an OpenRouter BYOK key, otherwise
+OpenAI `gpt-4o-mini-tts` or ElevenLabs when configured. The endpoint contracts
+remain audio-in/text-out and text-in/audio-out. The `groq-*` file/hook names are
+historical; there is no Groq in the speech path.
+
+### Local development archive
+
+While running `npm run dev`, `useInterviewSessionAutosave` and session changes
+write atomic per-attempt snapshots to
+`local-debug/interviews/<questionId>-<startedAt>.json`. Interviewer and feedback
+routes append request metadata, stream steps, tool diagnostics, generation
+timings, and redacted errors to `local-debug/debug.jsonl`. The archive API route
+is disabled outside development, and `/local-debug/` is git-ignored. Interview snapshots contain
+candidate chat, code, transcript, test results, feedback, and timing; don't
+share them without reviewing their contents.
 
 ### Code execution — do not touch
 

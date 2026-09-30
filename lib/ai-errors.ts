@@ -10,6 +10,7 @@ const PROVIDER_INFO: Record<AiProvider, ProviderEnv> = {
   groq: { envVar: "GROQ_API_KEY", label: "Groq" },
   anthropic: { envVar: "ANTHROPIC_API_KEY", label: "Anthropic" },
   openai: { envVar: "OPENAI_API_KEY", label: "OpenAI" },
+  openrouter: { envVar: "OPENROUTER_API_KEY", label: "OpenRouter" },
 };
 
 /**
@@ -101,6 +102,7 @@ function inferProviderFromMessage(message: string): AiProvider | null {
   if (/openai|gpt-/.test(m)) return "openai";
   if (/gemini|googleai|generativelanguage|google ai/.test(m)) return "gemini";
   if (/groq/.test(m)) return "groq";
+  if (/openrouter/.test(m)) return "openrouter";
   return null;
 }
 

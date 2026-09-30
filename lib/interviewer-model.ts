@@ -28,6 +28,15 @@ export function getInterviewerLanguageModel(
       }).chat(config.model);
     case "openai":
       return createOpenAI({ apiKey }).chat(config.model);
+    case "openrouter":
+      return createOpenAI({
+        baseURL: "https://openrouter.ai/api/v1",
+        apiKey,
+        headers: {
+          "HTTP-Referer": "https://github.com/karanjot-gaidu/ai-mock-interviewer",
+          "X-Title": "Mock Coding",
+        },
+      }).chat(config.model);
     case "anthropic":
       return createAnthropic({ apiKey })(config.model);
     case "gemini":

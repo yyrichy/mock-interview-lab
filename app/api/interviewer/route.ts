@@ -39,6 +39,10 @@ import {
 } from "@/lib/resolve-provider-key";
 import type { SessionState } from "@/lib/session-state";
 import { incrementStat } from "@/lib/stats";
+import {
+  appendLocalDebugEvent,
+  redactDebugMessage,
+} from "@/lib/local-debug-archive";
 
 export const runtime = "nodejs";
 
@@ -156,6 +160,8 @@ function validatePayloadSize(body: InterviewerRequestBody): NextResponse | null 
 }
 
 export async function POST(req: NextRequest) {
+  const debugRequestId = randomUUID();
+  const requestStartedAt = Date.now();
   try {
     const body = (await req.json()) as InterviewerRequestBody;
     const { sessionState, messages, transcript, turnCount } = body;
@@ -172,6 +178,11 @@ export async function POST(req: NextRequest) {
         : DEFAULT_AI_MODEL_PRESET_ID;
     const modelConfig = getAiModelConfig(modelPresetId);
     if (!modelConfig) {
+      await appendLocalDebugEvent({
+        type: "interviewer.configuration_error",
+        requestId: debugRequestId,
+        message: redactDebugMessage(`Invalid model preset: ${modelPresetId}`),
+      });
       return NextResponse.json(
         { error: `Invalid model preset "${modelPresetId}"` },
         { status: 400 }
@@ -188,12 +199,31 @@ export async function POST(req: NextRequest) {
       ({ apiKey } = resolveProviderKey(modelConfig.provider, byokKey));
     } catch (keyError) {
       if (keyError instanceof MissingProviderKeyError) {
+        await appendLocalDebugEvent({
+          type: "interviewer.configuration_error",
+          requestId: debugRequestId,
+          provider: modelConfig.provider,
+          message: redactDebugMessage(keyError.message),
+        });
         return NextResponse.json({ error: keyError.message }, { status: 401 });
       }
       throw keyError;
     }
 
     const model = getInterviewerLanguageModel(modelConfig, apiKey);
+
+    await appendLocalDebugEvent({
+      type: "interviewer.request",
+      requestId: debugRequestId,
+      questionId: sessionState.question.id,
+      provider: modelConfig.provider,
+      model: modelConfig.model,
+      phase: sessionState.phase,
+      turnCount,
+      messageCount: messages.length,
+      transcriptCount: transcript?.length ?? 0,
+      codeLength: sessionState.currentCode?.length ?? 0,
+    });
 
     // body transcript is the live value — overrides sessionState.transcript
     // which is the turn-start snapshot. buildTools(state) reads
@@ -339,6 +369,14 @@ export async function POST(req: NextRequest) {
               void setByokMode(true);
             }
             if (process.env.NODE_ENV === "development") {
+              const errorMessage =
+                error instanceof Error ? error.message : String(error);
+              void appendLocalDebugEvent({
+                type: "interviewer.error",
+                requestId: debugRequestId,
+                name: error instanceof Error ? error.name : "ProviderError",
+                message: redactDebugMessage(errorMessage),
+              });
               console.error("[interviewer-agent] stream error", error);
               if (error && typeof error === "object") {
                 const obj = error as Record<string, unknown>;
@@ -387,6 +425,15 @@ export async function POST(req: NextRequest) {
               toolsDisabledForTurn = true;
             }
             if (process.env.NODE_ENV === "development") {
+              void appendLocalDebugEvent({
+                type: "interviewer.tool_call_rejected",
+                requestId: debugRequestId,
+                tool: toolCall.toolName,
+                message: redactDebugMessage(
+                  error instanceof Error ? error.message : String(error)
+                ),
+                consecutiveToolFailures,
+              });
               console.warn("[interviewer-agent] tool call rejected — dropping", {
                 tool: toolCall.toolName,
                 toolCall,
@@ -399,6 +446,16 @@ export async function POST(req: NextRequest) {
           },
           onStepFinish({ text, toolCalls, toolResults, finishReason, usage }) {
             if (process.env.NODE_ENV === "development") {
+              void appendLocalDebugEvent({
+                type: "interviewer.step",
+                requestId: debugRequestId,
+                elapsedMs: Date.now() - requestStartedAt,
+                finishReason,
+                textLength: text?.length ?? 0,
+                toolCalls: toolCalls?.map((tc) => tc.toolName) ?? [],
+                toolResults: toolResults?.map((tr) => tr.toolName) ?? [],
+                usage: usage ? JSON.stringify(usage) : null,
+              });
               console.log("[interviewer-agent] step", {
                 finishReason,
                 textLen: text?.length ?? 0,
@@ -459,6 +516,11 @@ export async function POST(req: NextRequest) {
         const spoken = (await result.text).trim();
         if (spoken.length === 0) {
           if (process.env.NODE_ENV === "development") {
+            void appendLocalDebugEvent({
+              type: "interviewer.empty_reply_fallback",
+              requestId: debugRequestId,
+              elapsedMs: Date.now() - requestStartedAt,
+            });
             console.warn(
               "[interviewer-agent] empty reply — forcing plain-text fallback"
             );
@@ -482,6 +544,13 @@ export async function POST(req: NextRequest) {
     // Intentionally different from legacy /api/ai error shape — client must
     // handle both shapes until the Day 2 migration is complete.
     const message = e instanceof Error ? e.message : String(e);
+    await appendLocalDebugEvent({
+      type: "interviewer.request_error",
+      requestId: debugRequestId,
+      elapsedMs: Date.now() - requestStartedAt,
+      name: e instanceof Error ? e.name : "Error",
+      message: redactDebugMessage(message),
+    });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

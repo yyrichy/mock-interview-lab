@@ -6,4 +6,6 @@ export type StreamChatOptions = {
   model: string;
   /** Optional BYOK override — if present, used instead of the server env key. */
   apiKey?: string;
+  /** Optional OpenAI-compatible endpoint override (for OpenRouter). */
+  baseURL?: string;
 };

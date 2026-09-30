@@ -25,13 +25,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "invalid_audio" }, { status: 400 });
   }
 
-  // Same key policy as /api/interviewer: a BYOK OpenAI key (x-provider-key,
-  // prefix-validated) is preferred over the OPENAI_API_KEY env var; a
-  // mismatched header key is ignored, never logged or persisted.
+  // BYOK OpenRouter is preferred for speech when supplied. OpenAI remains a
+  // compatible fallback for existing users/deployments.
   const byokKey = req.headers.get("x-provider-key") ?? undefined;
+  const provider =
+    byokKey?.startsWith("sk-or-v1-") ||
+    (!byokKey && process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY)
+      ? "openrouter"
+      : "openai";
   let apiKey: string;
   try {
-    ({ apiKey } = resolveProviderKey("openai", byokKey));
+    ({ apiKey } = resolveProviderKey(provider, byokKey));
   } catch (keyError) {
     if (keyError instanceof MissingProviderKeyError) {
       return NextResponse.json({ error: keyError.message }, { status: 500 });
@@ -67,19 +71,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ? "audio.mp4"
         : "audio.webm";
 
-  const openaiForm = new FormData();
-  openaiForm.append("file", blob, filename);
-  openaiForm.append("model", "gpt-4o-mini-transcribe");
-  openaiForm.append("language", "en");
+  const transcriptionForm = new FormData();
+  transcriptionForm.append("file", blob, filename);
+  transcriptionForm.append(
+    "model",
+    provider === "openrouter"
+      ? process.env.OPENROUTER_STT_MODEL || "openai/whisper-large-v3-turbo"
+      : "gpt-4o-mini-transcribe"
+  );
+  transcriptionForm.append("language", "en");
 
-  let openaiRes: Response;
+  let transcriptionRes: Response;
   try {
-    openaiRes = await fetch(
-      "https://api.openai.com/v1/audio/transcriptions",
+    transcriptionRes = await fetch(
+      provider === "openrouter"
+        ? "https://openrouter.ai/api/v1/audio/transcriptions"
+        : "https://api.openai.com/v1/audio/transcriptions",
       {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}` },
-        body: openaiForm,
+        body: transcriptionForm,
       }
     );
   } catch (e) {
@@ -87,16 +98,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: `Network error: ${msg}` }, { status: 502 });
   }
 
-  if (!openaiRes.ok) {
-    const errText = await openaiRes.text().catch(() => "");
+  if (!transcriptionRes.ok) {
+    const errText = await transcriptionRes.text().catch(() => "");
     return NextResponse.json(
-      { error: errText || `OpenAI returned ${openaiRes.status}` },
-      { status: openaiRes.status }
+      { error: errText || `${provider} returned ${transcriptionRes.status}` },
+      { status: transcriptionRes.status }
     );
   }
 
   // Default response_format is JSON: { text }. Return it unchanged so the
   // request/response contract with the client is identical to the Groq route.
-  const data = (await openaiRes.json()) as { text?: string };
+  const data = (await transcriptionRes.json()) as { text?: string };
   return NextResponse.json({ text: data.text ?? "" });
 }

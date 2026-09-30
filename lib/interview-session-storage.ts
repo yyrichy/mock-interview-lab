@@ -18,6 +18,7 @@ export type PersistedInterviewSession = {
   savedAt: number;
   sessionPhase: SessionPhase;
   messages: ChatMessage[];
+  feedbackText: string;
   code: string;
   transcript: TranscriptEntry[];
   roundStartTime: number | null;
@@ -175,6 +176,7 @@ export function parsePersistedInterviewSession(
     savedAt: typeof o.savedAt === "number" ? o.savedAt : Date.now(),
     sessionPhase: o.sessionPhase,
     messages: o.messages,
+    feedbackText: typeof o.feedbackText === "string" ? o.feedbackText : "",
     code: o.code,
     transcript: o.transcript,
     roundStartTime:

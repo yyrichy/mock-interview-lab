@@ -116,6 +116,12 @@ async function* streamFromProvider(
     case "openai":
       yield* openaiProvider.streamChat(opts);
       break;
+    case "openrouter":
+      yield* openaiProvider.streamChat({
+        ...opts,
+        baseURL: "https://openrouter.ai/api/v1",
+      });
+      break;
     default: {
       const _exhaustive: never = modelConfig.provider;
       throw new Error(`Unknown provider: ${String(_exhaustive)}`);

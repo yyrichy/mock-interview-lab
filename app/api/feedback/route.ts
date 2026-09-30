@@ -4,6 +4,8 @@
 // model tool call. This is the only remaining non-conversational AI route; all
 // turn-by-turn conversation goes through POST /api/interviewer.
 
+import { randomUUID } from "node:crypto";
+
 import { isInsufficientQuotaError, toClientAiFailure } from "@/lib/ai-errors";
 import { type AiModelConfig, getAiModelConfig } from "@/lib/ai-models";
 import { setByokMode } from "@/lib/byok-mode";
@@ -17,6 +19,10 @@ import {
   streamFeedback,
 } from "@/lib/feedback";
 import { isConcreteInterviewerStyle } from "@/lib/interviewer-presets";
+import {
+  appendLocalDebugEvent,
+  redactDebugMessage,
+} from "@/lib/local-debug-archive";
 import { incrementStat } from "@/lib/stats";
 
 export const runtime = "nodejs";
@@ -171,6 +177,8 @@ function parseCodingVoiceReport(raw: unknown): CodingVoiceReport | null {
 }
 
 export async function POST(req: Request) {
+  const debugRequestId = randomUUID();
+  const requestStartedAt = Date.now();
   let body: FeedbackBody;
   try {
     body = (await req.json()) as FeedbackBody;
@@ -188,6 +196,20 @@ export async function POST(req: Request) {
     return jsonError("Invalid modelPresetId", 400);
   }
   const aiModelConfig: AiModelConfig = resolved;
+
+  void appendLocalDebugEvent({
+    type: "feedback.request",
+    requestId: debugRequestId,
+    provider: aiModelConfig.provider,
+    model: aiModelConfig.model,
+    chatMessageCount: Array.isArray(body.chatHistory)
+      ? body.chatHistory.length
+      : 0,
+    transcriptLength:
+      typeof body.fullTranscript === "string" ? body.fullTranscript.length : 0,
+    snapshotCount: Array.isArray(body.snapshots) ? body.snapshots.length : 0,
+    codeLength: typeof body.finalCode === "string" ? body.finalCode.length : 0,
+  });
 
   // BYOK: if the client sent a key via x-provider-key, use it instead of the env
   // var. The header is never logged or persisted.
@@ -223,10 +245,21 @@ export async function POST(req: Request) {
     const { message, status } = toClientAiFailure(e, {
       provider: aiModelConfig.provider,
     });
+    void appendLocalDebugEvent({
+      type: "feedback.error",
+      requestId: debugRequestId,
+      durationMs: Date.now() - requestStartedAt,
+      status,
+    });
     return jsonError(message, status);
   }
 
   if (first.done) {
+    void appendLocalDebugEvent({
+      type: "feedback.empty_reply",
+      requestId: debugRequestId,
+      durationMs: Date.now() - requestStartedAt,
+    });
     return jsonError("The model returned no output.", 502);
   }
 
@@ -240,6 +273,11 @@ export async function POST(req: Request) {
         for await (const chunk of gen) {
           controller.enqueue(encoder.encode(chunk));
         }
+        void appendLocalDebugEvent({
+          type: "feedback.completed",
+          requestId: debugRequestId,
+          durationMs: Date.now() - requestStartedAt,
+        });
         controller.close();
       } catch (e: unknown) {
         if (isInsufficientQuotaError(e)) {
@@ -247,6 +285,12 @@ export async function POST(req: Request) {
         }
         const { message } = toClientAiFailure(e, {
           provider: aiModelConfig.provider,
+        });
+        void appendLocalDebugEvent({
+          type: "feedback.stream_error",
+          requestId: debugRequestId,
+          durationMs: Date.now() - requestStartedAt,
+          message: redactDebugMessage(message),
         });
         controller.enqueue(encoder.encode(`\n\n[Error: ${message}]`));
         controller.close();

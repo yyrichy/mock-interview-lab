@@ -16,9 +16,9 @@ Take a request all the way to done in a single run. One job =
 1. **Read the actual code first** — every file you're about to change plus the
    call sites that constrain it. The docs are a map, not the territory.
 2. **Make the change** (judgment defaults below).
-3. **Gate:** `npm run lint` → zero errors. There is no test suite; don't invent
-   one, and don't run `npm run build` — behavior is verified by the human via
-   `npm run dev`.
+3. **Gate:** `npm run lint` → zero errors. Run the focused browser e2e when the
+   user asks for it; don't add more tests or run `npm run build` unless asked.
+   Other behavior is verified by the human via `npm run dev`.
 4. **Changelog:** add a dated entry at the TOP of `docs/CHANGES.md`, matching
    the existing entries' shape: what changed per file and why, ending with lint
    status and a smoke-test checklist.
@@ -89,21 +89,22 @@ evidence and run tests.
   gone. Phase advances via inline text tokens the model emits and the client
   strips (`[->planning]`, `[->coding]`, `[segment-complete]`) — transitions are
   text, never tools.
-- Don't touch `lib/judge0.ts`, `/api/judge0`, `/api/transcribe`, `/api/tts`.
-  Execution and speech are settled, working layers.
+- Don't touch `lib/judge0.ts` or `/api/judge0`. Execution is a settled,
+  working layer. Speech routes are established, but may be changed when the
+  user explicitly asks for speech-provider or voice-flow work.
 - Don't send `interviewerContext` or hidden test cases to the model. Redact
   hidden input/expected before any tool return. Client components only ever
   receive `PublicQuestion` (whitelist-built in `lib/questions.ts`) — never
   widen it back toward `Question` across the client boundary.
 - Don't reintroduce Web Speech, local Whisper, history summarization, or
-  windowing. Transcription is server-side hosted (OpenAI
-  `gpt-4o-mini-transcribe`); full chat history is sent verbatim every turn.
+  windowing. Transcription is server-side hosted (OpenAI or OpenRouter Whisper);
+  full chat history is sent verbatim every turn.
 - Don't spawn parallel sub-agents — the steps here are sequentially dependent.
 - No `any` types. Server-only secrets; BYOK via `x-provider-key` header, never
   logged or persisted.
 - Default interviewer model is **OpenAI GPT-5.4 Mini** (hosted demo on the
-  builder's own key — zero BYOK friction for signups). Groq, Gemini, and
-  Anthropic stay selectable via BYOK. Because Groq is a weak structured
+  builder's own key — zero BYOK friction for signups). Groq, Gemini, Anthropic,
+  and OpenRouter stay selectable via BYOK. Because Groq is a weak structured
   tool-caller, lean on prompt+state, not tool orchestration: few tools, no
   control-flow tools, never a silent/tool-only turn, and keep the weak-caller
   guards (`noToolInput`, the force-text-on-failure-streak step guard, the
@@ -114,6 +115,9 @@ evidence and run tests.
 ```bash
 npm run dev      # start dev server — the only way to run it
 npm run lint     # ESLint — the gate for "done"
+npm run test:e2e        # browser flow with mocked AI/speech APIs
+npm run test:e2e:whisper # opt-in real Whisper check; uses OPENROUTER_API_KEY
+npm run test:e2e:live    # opt-in real Qwen + Whisper + TTS interview flow
 ```
 
 ## Stop condition
@@ -121,7 +125,8 @@ npm run lint     # ESLint — the gate for "done"
 Done = code-complete AND `npm run lint` passes with zero errors AND
 `docs/CHANGES.md` has the entry. Hand back with the summary, smoke-test
 checklist, and review queue — uncommitted. Do NOT simulate an interview to
-"verify" conversational behavior — the human does that by running the app.
+"verify" conversational behavior unless the user asks for a specific mock e2e;
+mock external AI/speech APIs in those tests so they are repeatable and private.
 
 ---
 

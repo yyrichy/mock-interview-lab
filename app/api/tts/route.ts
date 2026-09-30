@@ -36,14 +36,77 @@ type TtsRequestBody = {
   voiceId?: unknown;
 };
 
-function resolveTtsProvider(): "openai" | "elevenlabs" {
+function resolveTtsProvider(
+  req: NextRequest
+): "openai" | "elevenlabs" | "openrouter" {
   const explicit = process.env.TTS_PROVIDER?.trim().toLowerCase();
-  if (explicit === "openai" || explicit === "elevenlabs") {
+  if (
+    explicit === "openai" ||
+    explicit === "elevenlabs" ||
+    explicit === "openrouter"
+  ) {
     return explicit;
+  }
+  if (
+    req.headers.get("x-provider-key")?.startsWith("sk-or-v1-") ||
+    (process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY)
+  ) {
+    return "openrouter";
   }
   // Back-compat: an ElevenLabs key in env keeps today's behavior unless
   // TTS_PROVIDER says otherwise.
   return process.env.ELEVENLABS_API_KEY ? "elevenlabs" : "openai";
+}
+
+async function synthesizeViaOpenRouter(
+  req: NextRequest,
+  text: string
+): Promise<NextResponse> {
+  const byokKey = req.headers.get("x-provider-key") ?? undefined;
+  let apiKey: string;
+  try {
+    ({ apiKey } = resolveProviderKey("openrouter", byokKey));
+  } catch (keyError) {
+    if (keyError instanceof MissingProviderKeyError) {
+      return NextResponse.json({ error: keyError.message }, { status: 500 });
+    }
+    throw keyError;
+  }
+
+  let result: Response;
+  try {
+    result = await fetch("https://openrouter.ai/api/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: process.env.OPENROUTER_TTS_MODEL || "deepgram/flux-tts:free",
+        voice: process.env.OPENROUTER_TTS_VOICE || "flux-alexis-en",
+        input: text.slice(0, OPENAI_MAX_INPUT_CHARS),
+        response_format: "mp3",
+      }),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `Network error: ${msg}` }, { status: 502 });
+  }
+
+  if (!result.ok) {
+    const errText = await result.text().catch(() => "");
+    return NextResponse.json(
+      { error: errText || `OpenRouter returned ${result.status}` },
+      { status: result.status }
+    );
+  }
+
+  return new NextResponse(await result.arrayBuffer(), {
+    headers: {
+      "Content-Type": result.headers.get("content-type") ?? "audio/mpeg",
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 function safeVoiceId(value: unknown): string | null {
@@ -199,7 +262,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const text = body.text.trim().slice(0, MAX_TEXT_CHARS);
 
-  if (resolveTtsProvider() === "openai") {
+  const provider = resolveTtsProvider(req);
+  if (provider === "openrouter") {
+    return synthesizeViaOpenRouter(req, text);
+  }
+  if (provider === "openai") {
     return synthesizeViaOpenAi(req, text);
   }
   return synthesizeViaElevenLabs(req, text, body.voiceId);

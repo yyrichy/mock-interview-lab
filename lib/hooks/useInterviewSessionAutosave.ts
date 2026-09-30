@@ -6,6 +6,7 @@ import {
   savePersistedInterviewSession,
   type PersistedInterviewSession,
 } from "@/lib/interview-session-storage";
+import { saveLocalDebugSnapshot } from "@/lib/local-debug-client";
 
 const AUTOSAVE_MS = 30_000;
 
@@ -23,7 +24,9 @@ export function useInterviewSessionAutosave(
     }
     const tick = () => {
       try {
-        savePersistedInterviewSession(collectRef.current());
+        const session = collectRef.current();
+        savePersistedInterviewSession(session);
+        saveLocalDebugSnapshot(session);
       } catch {
         /* ignore */
       }

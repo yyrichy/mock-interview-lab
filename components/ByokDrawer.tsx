@@ -17,6 +17,7 @@ const PROVIDERS: { id: ProviderKeyId; label: string; placeholder: string }[] = [
   { id: "groq", label: "Groq", placeholder: "gsk_…" },
   { id: "anthropic", label: "Anthropic", placeholder: "sk-ant-…" },
   { id: "openai", label: "OpenAI", placeholder: "sk-…" },
+  { id: "openrouter", label: "OpenRouter", placeholder: "sk-or-v1-…" },
   { id: "elevenlabs", label: "ElevenLabs", placeholder: "sk_…" },
 ];
 
