@@ -128,11 +128,10 @@ communication.
 Uniform per-provider adapters live under `lib/providers/*` (OpenAI, Groq, Gemini,
 Anthropic). Model presets are defined in `lib/ai-models.ts`:
 
-- **OpenAI GPT-5.4 Mini** — default interviewer + feedback model. A strong, reliable
-  structured tool-caller; the hosted demo runs on the builder's own OpenAI key so
-  the interview "just works" with no BYOK friction.
-- **Groq Llama 3.3 70B**, **Gemini 2.5 Flash**, **Claude Sonnet 4.6** — selectable in
-  the chat panel's model picker (persisted to localStorage).
+- **OpenRouter Qwen3.8 27B (free)** — default interviewer + feedback model.
+- **OpenAI GPT-5.4 Mini**, **Groq Llama 3.3 70B**, **Gemini 2.5 Flash**, and
+  **Claude Sonnet 4.6** — selectable in the chat panel's model picker (persisted
+  to localStorage).
 
 Because a selectable provider (Groq) can be a weak structured tool-caller, the
 architecture leans on prompt + state rather than heavy tool orchestration: few

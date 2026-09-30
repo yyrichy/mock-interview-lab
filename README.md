@@ -46,7 +46,7 @@ A normal chat is already good at running a flexible clarify → approach → cod
 | Framework | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
 | Editor | Monaco (`@monaco-editor/react`) |
 | AI orchestration | Vercel AI SDK 6 (`streamText` + tool calling) |
-| Interviewer / feedback models | OpenAI GPT-5.4 Mini (default); Groq Llama 3.3 70B, Gemini 2.5 Flash, Claude Sonnet 4.6, and OpenRouter Qwen3.8 27B (free) selectable in the chat panel (persisted to localStorage) |
+| Interviewer / feedback models | OpenRouter Qwen3.8 27B (free, default); OpenAI GPT-5.4 Mini, Groq Llama 3.3 70B, Gemini 2.5 Flash, and Claude Sonnet 4.6 selectable in the chat panel (persisted to localStorage) |
 | Voice in | OpenAI `gpt-4o-mini-transcribe` by default or OpenRouter Whisper Large V3 Turbo when using an OpenRouter key — ambient 30s chunks during coding + push-to-talk mic |
 | Voice out | OpenAI `gpt-4o-mini-tts` by default, ElevenLabs, or free OpenRouter Deepgram Flux TTS |
 | Code execution | Judge0 — Python 3 only; public CE endpoint by default, override via `JUDGE0_API_URL` |
@@ -59,10 +59,10 @@ A normal chat is already good at running a flexible clarify → approach → cod
 ## Run it locally
 
 ```bash
-git clone https://github.com/karanjot-gaidu/ai-mock-interviewer.git
-cd ai-mock-interviewer
+git clone https://github.com/yyrichy/mock-interview-lab.git
+cd mock-interview-lab
 npm install
-# copy .env.example → .env.local and fill in at least OPENAI_API_KEY
+# copy .env.example → .env.local and add OPENROUTER_API_KEY
 # copy data/questions.example.json → data/questions.demo.json and add your questions
 npm run dev      # http://localhost:3000
 ```
@@ -76,11 +76,11 @@ every `hiddenTestCases` array are server-only grading data that never reach the
 browser or get read aloud. A handful of questions with sharp hidden tests beats
 many shallow ones.
 
-The default setup runs on **OpenAI**. To use the no-cost interviewer, configure an OpenRouter key and choose **Qwen3.8 27B (free)** in the Model menu. The free endpoint is hosted by third-party providers, and its data handling may vary; avoid sending sensitive or confidential information. OpenRouter currently reports a lower median latency for Qwen3.8 27B than Laguna S 2.1, though free model availability and response time can change. OpenRouter speech uses Whisper at $0.000003 per second (about $0.011 per hour) and free Flux TTS. Everything else is optional:
+The default interviewer and feedback model is **Qwen3.8 27B (free)** through OpenRouter. Add an OpenRouter key to `.env.local` or paste it in the in-app API Keys drawer; there is no need to change the model picker for a fresh session. The free endpoint is hosted by third-party providers, and its data handling may vary; avoid sending sensitive or confidential information. OpenRouter speech uses Whisper at $0.000003 per second (about $0.011 per hour) and free Flux TTS. Other providers are optional:
 
 ```
-OPENAI_API_KEY=...        # required for the default setup
-OPENROUTER_API_KEY=...    # optional; Qwen interviewer + Whisper STT + Flux TTS
+OPENROUTER_API_KEY=...    # default Qwen interviewer + Whisper STT + Flux TTS
+OPENAI_API_KEY=...        # optional alternate interviewer and speech provider
 NEXT_PUBLIC_SITE_URL=...  # optional; canonical URL for OG tags (defaults to the mockcoding.dev)
 GEMINI_API_KEY=...        # optional alternate interviewer model
 GROQ_API_KEY=...          # optional alternate interviewer model
@@ -175,5 +175,5 @@ public/
 
 - **Mock voice e2e:** install Chromium once with `npx playwright install chromium`, then run `npm run test:e2e`. This supplies a generated tone as microphone input and mocks transcription and interviewer responses, so it makes no provider calls.
 - **Real Whisper integration:** run `npm run test:e2e:whisper` with `OPENROUTER_API_KEY` in `.env.local`. It plays a short generated speech clip into the mock microphone and sends the resulting recording through the real OpenRouter Whisper endpoint; the interviewer stays mocked. It reports word error rate against the clip's known phrase and uses a small amount of API usage. The clip is synthesized speech, so it does not measure recognition of your own voice or room noise.
-- **Live interview e2e:** run `npm run test:e2e:live` with `OPENROUTER_API_KEY` in `.env.local`. It selects Qwen in the app's model picker, starts a fresh interview, waits for a live interviewer opening and TTS response, then pushes a generated spoken clarification through the real Whisper endpoint and verifies the real interviewer responds using that transcript. It makes real provider calls (Qwen free endpoint, Whisper metered endpoint, Flux TTS free endpoint). The speech is synthetic and the test cannot assess your own mic/audio quality. Free model latency and availability vary.
+- **Live interview e2e:** run `npm run test:e2e:live` with `OPENROUTER_API_KEY` in `.env.local`. It starts a fresh interview using the default Qwen model, waits for a live opening and TTS response, then pushes a generated spoken clarification through real Whisper and verifies the real interviewer responds using that transcript. It makes real provider calls (Qwen free endpoint, Whisper metered endpoint, Flux TTS free endpoint). The speech is synthetic and the test cannot assess your own mic/audio quality. Free model latency and availability vary.
 - **Python only.** Judge0 runs the candidate's Python (language 71) against visible and hidden cases; hidden inputs/expected values never reach the browser or the model.

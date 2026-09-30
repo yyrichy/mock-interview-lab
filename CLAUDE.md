@@ -140,8 +140,8 @@ summarization or history windowing.
 
 Uniform adapters under `lib/providers/*` (OpenAI, Groq, Gemini, Anthropic,
 OpenRouter-compatible chat completions). Presets in `lib/ai-models.ts` (add
-models there only); default is
-`openai-gpt-5.4-mini`. BYOK via `components/ByokDrawer.tsx` → localStorage →
+models there only); default is `openrouter-qwen3.8-27b-free`. BYOK via
+`components/ByokDrawer.tsx` → localStorage →
 `x-provider-key` header; server (`lib/resolve-provider-key.ts`) prefers header
 over env, never logs/persists.
 

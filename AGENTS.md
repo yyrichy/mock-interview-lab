@@ -102,9 +102,8 @@ evidence and run tests.
 - Don't spawn parallel sub-agents — the steps here are sequentially dependent.
 - No `any` types. Server-only secrets; BYOK via `x-provider-key` header, never
   logged or persisted.
-- Default interviewer model is **OpenAI GPT-5.4 Mini** (hosted demo on the
-  builder's own key — zero BYOK friction for signups). Groq, Gemini, Anthropic,
-  and OpenRouter stay selectable via BYOK. Because Groq is a weak structured
+- Default interviewer model is **OpenRouter Qwen3.8 27B (free)**. OpenAI GPT-5.4
+  Mini, Groq, Gemini, and Anthropic stay selectable via BYOK. Because Groq is a weak structured
   tool-caller, lean on prompt+state, not tool orchestration: few tools, no
   control-flow tools, never a silent/tool-only turn, and keep the weak-caller
   guards (`noToolInput`, the force-text-on-failure-streak step guard, the

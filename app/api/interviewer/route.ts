@@ -4,8 +4,8 @@
 // Built on Vercel AI SDK 6 streamText with grounding-only tool calling.
 // Phase is app metadata (the model signals readiness with inline tokens; the
 // client commits). The written scorecard is a separate grounded generation
-// (POST /api/feedback). Default model is OpenAI GPT-5.4 Mini (the hosted demo
-// runs on the builder's own key); any preset works via BYOK.
+// (POST /api/feedback). Default model is OpenRouter Qwen3.8 27B (free); any
+// preset works via BYOK.
 
 import { randomUUID } from "node:crypto";
 

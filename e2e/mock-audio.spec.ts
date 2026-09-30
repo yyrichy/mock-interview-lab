@@ -24,7 +24,10 @@ test("push-to-talk uploads captured audio and sends the mocked transcript", asyn
     "Good. Which boundary case would you check first?",
   ];
   const uploadedAudioSizes: number[] = [];
-  const interviewerRequests: Array<{ messages?: Array<{ content?: string }> }> = [];
+  const interviewerRequests: Array<{
+    modelPresetId?: string;
+    messages?: Array<{ content?: string }>;
+  }> = [];
 
   await page.addInitScript(() => {
     try {
@@ -73,6 +76,7 @@ test("push-to-talk uploads captured audio and sends the mocked transcript", asyn
 
   await page.route("**/api/interviewer", async (route) => {
     const body = route.request().postDataJSON() as {
+      modelPresetId?: string;
       messages?: Array<{ content?: string }>;
     };
     interviewerRequests.push(body);
@@ -128,6 +132,9 @@ test("push-to-talk uploads captured audio and sends the mocked transcript", asyn
 
   expect(uploadedAudioSizes).toHaveLength(2);
   expect(interviewerRequests).toHaveLength(3);
+  expect(interviewerRequests[0]?.modelPresetId).toBe(
+    "openrouter-qwen3.8-27b-free"
+  );
   expect(
     interviewerRequests[1]?.messages?.some((message) =>
       message.content?.includes("Can the input contain duplicate values?")

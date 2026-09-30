@@ -41,14 +41,10 @@ export const AI_MODEL_OPTIONS: ReadonlyArray<{
   { id: "openrouter-qwen3.8-27b-free", label: "Qwen3.8 27B (free; avoid sensitive data)" },
 ];
 
-// Default interviewer model is OpenAI GPT-5.4 Mini — a strong, reliable
-// structured tool-caller. The hosted demo is deployed with the builder's own
-// OpenAI key, so the interview "just works" for signups: no BYOK friction, no
-// weak-caller failures. Groq, Gemini, Anthropic, and OpenRouter Qwen remain
-// selectable for self-hosters who BYOK — they are simply not the default.
-// One artifact, two configs (see demo-default-swap.md). Matches the
-// "default is GPT-5.4 Mini" claim in AGENTS.md / CLAUDE.md.
-export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId = "openai-gpt-5.4-mini";
+// Default to the OpenRouter Qwen preset used by the local interview setup.
+// Self-hosters need OPENROUTER_API_KEY (or a key in the API Keys drawer).
+export const DEFAULT_AI_MODEL_PRESET_ID: AiModelPresetId =
+  "openrouter-qwen3.8-27b-free";
 
 /** localStorage key for the interview model picker (survives refresh). */
 export const AI_MODEL_PRESET_STORAGE_KEY = "mock-coding:modelPresetId";

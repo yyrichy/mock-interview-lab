@@ -74,36 +74,21 @@ test("real interviewer holds a voice conversation through two turns", async ({
   await page.goto("/interview/two-sum");
 
   const messages = page.locator("aside ul > li");
-  // The app starts with its OpenAI default before localStorage preferences can
-  // hydrate. Make model selection through the same controls a user sees, then
-  // reset to begin the actual live practice session with the selected model.
   await expect
-    .poll(
-      async () => (await messages.first().innerText()).trim().length,
-      { timeout: 15_000 }
-    )
-    .toBeGreaterThan(0);
+    .poll(async () => (await messages.first().innerText()).trim().length, {
+      timeout: 120_000,
+    })
+    .toBeGreaterThan(30);
   await expect
     .poll(() => interviewerRequests.length, { timeout: 60_000 })
     .toBe(1);
-  await expect(page.getByRole("button", { name: "Reset session" })).toBeEnabled();
-  await page.getByRole("button", { name: "Advanced" }).click();
-  await page.getByLabel("Interviewer AI model").selectOption(modelPresetId);
-  await page.getByRole("button", { name: "Reset session" }).click();
-  await expect
-    .poll(() => interviewerRequests.length, { timeout: 60_000 })
-    .toBe(2);
-  await expect
-    .poll(
-      async () => (await messages.first().innerText()).trim().length,
-      { timeout: 120_000 }
-    )
-    .toBeGreaterThan(30);
+  expect(interviewerRequests[0]?.modelPresetId).toBe(modelPresetId);
+  const opening = await messages.first().innerText();
+  expect(opening).not.toContain("[Error:");
   await expect
     .poll(() => ttsStatuses.length, { timeout: 60_000 })
     .toBeGreaterThan(0);
   expect(ttsStatuses[0]).toBe(200);
-  const opening = await messages.first().innerText();
   console.log(`Live interviewer opening: ${opening.replace(/\s*Speak\s*$/, "")}`);
 
   const mic = page.getByRole("button", {
@@ -139,9 +124,9 @@ test("real interviewer holds a voice conversation through two turns", async ({
     .toBeGreaterThan(20);
   await expect
     .poll(() => interviewerRequests.length, { timeout: 60_000 })
-    .toBe(3);
+    .toBe(2);
 
-  const candidateRequest = interviewerRequests[2];
+  const candidateRequest = interviewerRequests[1];
   expect(candidateRequest?.modelPresetId).toBe(modelPresetId);
   expect(
     candidateRequest?.messages?.some(

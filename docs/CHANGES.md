@@ -1,5 +1,22 @@
 # Changes
 
+## 2026-09-30 — Make Qwen the default interviewer model
+
+- `lib/ai-models.ts`: use OpenRouter Qwen3.8 27B (free) as the default model
+  for new interviews and feedback, matching the local development setup.
+- `e2e/live-conversation.spec.ts`: start directly with the default model and
+  assert both the opening and candidate-response turns use Qwen; no model
+  selection or session reset is needed.
+- Updated setup documentation and `.env.example` to identify OpenRouter as the
+  default interviewer key and OpenAI as an optional alternative.
+- Added an assertion to the deterministic browser flow that its first request
+  uses the Qwen default.
+- Verification: `npm run lint` passed. The live e2e reached Qwen without a
+  picker/reset, but OpenRouter returned HTTP 429 from its shared free upstream
+  pool, so the full live conversation could not be verified on this run.
+- Smoke checklist: with `OPENROUTER_API_KEY` configured, open a fresh interview
+  and confirm Qwen greets the candidate without changing Advanced settings.
+
 ## 2026-09-30 — Add live mock-interview e2e flow
 
 - Added Playwright and `npm run test:e2e` with a browser test that generates a
